@@ -5,7 +5,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 
-from app.api.deps import get_async_session, require_role
+from app.api.deps import get_db, require_role
 from app.core.exceptions import NotFoundError, ValidationError
 from app.core.logging import get_logger
 from app.core.security import TokenData
@@ -60,7 +60,7 @@ async def create_matrix(
     test_case_ids: list[UUID],
     configurations: list[MatrixConfiguration],
     description: str | None = None,
-    session: AsyncSession = Depends(get_async_session),
+    session: AsyncSession = Depends(get_db),
     current_user: TokenData = Depends(require_role(["admin", "safety_engineer", "ml_engineer"])),
 ):
     """Create a new evaluation matrix."""
@@ -128,7 +128,7 @@ async def list_matrices(
     status: str | None = None,
     skip: int = 0,
     limit: int = 100,
-    session: AsyncSession = Depends(get_async_session),
+    session: AsyncSession = Depends(get_db),
     current_user: TokenData = Depends(require_role(["admin", "safety_engineer", "ml_engineer", "qa_engineer", "viewer"])),
 ):
     """List evaluation matrices."""
@@ -145,7 +145,7 @@ async def list_matrices(
 @router.get("/matrices/{matrix_id}", response_model=EvaluationMatrix)
 async def get_matrix(
     matrix_id: UUID,
-    session: AsyncSession = Depends(get_async_session),
+    session: AsyncSession = Depends(get_db),
     current_user: TokenData = Depends(require_role(["admin", "safety_engineer", "ml_engineer", "qa_engineer", "viewer"])),
 ):
     """Get evaluation matrix with cells."""
@@ -159,7 +159,7 @@ async def get_matrix(
 @router.get("/matrices/{matrix_id}/summary", response_model=MatrixExecutionSummary)
 async def get_matrix_summary(
     matrix_id: UUID,
-    session: AsyncSession = Depends(get_async_session),
+    session: AsyncSession = Depends(get_db),
     current_user: TokenData = Depends(require_role(["admin", "safety_engineer", "ml_engineer", "qa_engineer", "viewer"])),
 ):
     """Get execution summary for matrix."""
@@ -201,7 +201,7 @@ async def get_matrix_summary(
 @router.post("/matrices/{matrix_id}/execute", response_model=EvaluationMatrix)
 async def execute_matrix(
     matrix_id: UUID,
-    session: AsyncSession = Depends(get_async_session),
+    session: AsyncSession = Depends(get_db),
     current_user: TokenData = Depends(require_role(["admin", "safety_engineer", "ml_engineer", "qa_engineer"])),
 ):
     """Execute all cells in the matrix."""
@@ -366,7 +366,7 @@ async def _execute_cell(
 async def list_matrix_cells(
     matrix_id: UUID,
     status: str | None = None,
-    session: AsyncSession = Depends(get_async_session),
+    session: AsyncSession = Depends(get_db),
     current_user: TokenData = Depends(require_role(["admin", "safety_engineer", "ml_engineer", "qa_engineer", "viewer"])),
 ):
     """List cells in a matrix."""
@@ -379,7 +379,7 @@ async def list_matrix_cells(
 async def get_matrix_cell(
     matrix_id: UUID,
     cell_id: UUID,
-    session: AsyncSession = Depends(get_async_session),
+    session: AsyncSession = Depends(get_db),
     current_user: TokenData = Depends(require_role(["admin", "safety_engineer", "ml_engineer", "qa_engineer", "viewer"])),
 ):
     """Get a specific matrix cell."""

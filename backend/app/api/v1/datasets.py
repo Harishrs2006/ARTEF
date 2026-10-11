@@ -5,7 +5,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Query, UploadFile, File
 from sqlalchemy import select
 
-from app.api.deps import get_async_session, require_role
+from app.api.deps import get_db, require_role
 from app.core.config import get_settings
 from app.core.exceptions import NotFoundError, ValidationError
 from app.core.logging import get_logger
@@ -35,7 +35,7 @@ async def create_dataset(
     schema: dict[str, Any] = None,
     split_config: dict[str, Any] = None,
     status: DatasetStatusEnum = DatasetStatusEnum.DRAFT,
-    session: AsyncSession = Depends(get_async_session),
+    session: AsyncSession = Depends(get_db),
     current_user: TokenData = Depends(require_role(["admin", "safety_engineer", "ml_engineer"])),
 ):
     """Create a new dataset."""
@@ -65,7 +65,7 @@ async def list_datasets(
     status: DatasetStatusEnum | None = None,
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=100),
-    session: AsyncSession = Depends(get_async_session),
+    session: AsyncSession = Depends(get_db),
     current_user: TokenData = Depends(require_role(["admin", "safety_engineer", "ml_engineer", "qa_engineer", "viewer"])),
 ):
     """List datasets."""
@@ -92,7 +92,7 @@ async def list_datasets(
 @router.get("/datasets/{dataset_id}")
 async def get_dataset(
     dataset_id: UUID,
-    session: AsyncSession = Depends(get_async_session),
+    session: AsyncSession = Depends(get_db),
     current_user: TokenData = Depends(require_role(["admin", "safety_engineer", "ml_engineer", "qa_engineer", "viewer"])),
 ):
     """Get dataset with versions."""
@@ -129,7 +129,7 @@ async def get_dataset(
 async def create_dataset_version(
     dataset_id: UUID,
     changelog: str | None = None,
-    session: AsyncSession = Depends(get_async_session),
+    session: AsyncSession = Depends(get_db),
     current_user: TokenData = Depends(require_role(["admin", "safety_engineer", "ml_engineer"])),
 ):
     """Create a new version of a dataset."""
@@ -173,7 +173,7 @@ async def list_dataset_versions(
     dataset_id: UUID,
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=100),
-    session: AsyncSession = Depends(get_async_session),
+    session: AsyncSession = Depends(get_db),
     current_user: TokenData = Depends(require_role(["admin", "safety_engineer", "ml_engineer", "qa_engineer", "viewer"])),
 ):
     """List dataset versions."""
@@ -200,7 +200,7 @@ async def list_dataset_versions(
 async def get_dataset_version(
     dataset_id: UUID,
     version_id: UUID,
-    session: AsyncSession = Depends(get_async_session),
+    session: AsyncSession = Depends(get_db),
     current_user: TokenData = Depends(require_role(["admin", "safety_engineer", "ml_engineer", "qa_engineer", "viewer"])),
 ):
     """Get dataset version details."""
@@ -225,7 +225,7 @@ async def get_dataset_version(
 async def list_dataset_splits(
     dataset_id: UUID,
     version_id: UUID,
-    session: AsyncSession = Depends(get_async_session),
+    session: AsyncSession = Depends(get_db),
     current_user: TokenData = Depends(require_role(["admin", "safety_engineer", "ml_engineer", "qa_engineer", "viewer"])),
 ):
     """List splits for a dataset version."""
@@ -247,7 +247,7 @@ async def get_dataset_split(
     dataset_id: UUID,
     version_id: UUID,
     split_name: str,
-    session: AsyncSession = Depends(get_async_session),
+    session: AsyncSession = Depends(get_db),
     current_user: TokenData = Depends(require_role(["admin", "safety_engineer", "ml_engineer", "qa_engineer", "viewer"])),
 ):
     """Get a specific split."""
@@ -270,7 +270,7 @@ async def get_dataset_split(
 async def upload_dataset_file(
     dataset_id: UUID,
     file: UploadFile = File(...),
-    session: AsyncSession = Depends(get_async_session),
+    session: AsyncSession = Depends(get_db),
     current_user: TokenData = Depends(require_role(["admin", "safety_engineer", "ml_engineer"])),
 ):
     """Upload a dataset file (CSV, JSON, Parquet)."""
@@ -299,7 +299,7 @@ async def split_dataset(
     version_id: UUID,
     split_ratios: dict[str, float] = None,
     seed: int = 42,
-    session: AsyncSession = Depends(get_async_session),
+    session: AsyncSession = Depends(get_db),
     current_user: TokenData = Depends(require_role(["admin", "safety_engineer", "ml_engineer"])),
 ):
     """Split dataset into train/val/test splits."""
@@ -319,7 +319,7 @@ async def split_dataset(
 @router.delete("/datasets/{dataset_id}")
 async def delete_dataset(
     dataset_id: UUID,
-    session: AsyncSession = Depends(get_async_session),
+    session: AsyncSession = Depends(get_db),
     current_user: TokenData = Depends(require_role(["admin"])),
 ):
     """Delete a dataset."""

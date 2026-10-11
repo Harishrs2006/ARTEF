@@ -127,7 +127,7 @@ async def create_agent(
         raise ConflictError(f"Agent with name '{agent.name}' already exists")
 
     new_agent = TargetAgent(
-        **agent.model_dump(),
+        **agent.model_dump(mode="json"),
         created_by=UUID(current_user.sub),
     )
     new_agent = await agent_repo.create(new_agent)
@@ -159,7 +159,7 @@ async def update_agent(
     if not agent:
         raise NotFoundError("TargetAgent", str(agent_id))
 
-    update_data = update.model_dump(exclude_unset=True)
+    update_data = update.model_dump(exclude_unset=True, mode="json")
     for key, value in update_data.items():
         setattr(agent, key, value)
 

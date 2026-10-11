@@ -20,6 +20,7 @@ def _build_case_response(c) -> "TestCaseResponse":
     return TestCaseResponse(
         id=c.id,
         test_case_id=c.test_case_id,
+        version=c.version,
         category=c.category,
         severity=c.severity,
         input=c.input,
@@ -32,6 +33,7 @@ def _build_case_response(c) -> "TestCaseResponse":
 class TestCaseResponse(BaseModel):
     id: UUID
     test_case_id: str
+    version: int = 1
     category: TestCaseCategory
     severity: TestCaseSeverity
     input: str
@@ -210,10 +212,10 @@ async def get_suite(
     ),
 ):
     service = SuiteService(suite_repo, case_repo)
-    suite = await service.get_suite_with_cases(suite_id)
-    if not suite:
+    found = await service.get_suite_with_cases(suite_id)
+    if not found:
         raise NotFoundError("TestSuite", str(suite_id))
-    cases = await case_repo.list_by_suite(suite.id)
+    suite, cases = found
     return TestSuiteResponse(
         id=suite.id,
         name=suite.name,
@@ -336,7 +338,7 @@ async def create_test_case(
         snapshot=test_case.model_dump(),
         created_by=UUID(current_user.sub),
     )
-    await case_repo.session.add(version)
+    case_repo.session.add(version)
     await case_repo.session.flush()
 
     return _build_case_response(new_case)
@@ -392,7 +394,7 @@ async def update_test_case(
         snapshot=update_data,
         created_by=UUID(current_user.sub),
     )
-    await case_repo.session.add(version)
+    case_repo.session.add(version)
     await case_repo.session.flush()
 
     return _build_case_response(case)

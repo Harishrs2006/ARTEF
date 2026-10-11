@@ -15,7 +15,7 @@ from app.api.deps import (
     get_suite_repo,
     require_role,
 )
-from app.core.exceptions import ConflictError, NotFoundError
+from app.core.exceptions import ConflictError, NotFoundError, TaskQueueUnavailableError
 from app.core.logging import get_logger
 from app.domain.enums import RunStatus
 from app.models.run import Run
@@ -23,6 +23,7 @@ from app.repositories.agents import TargetAgentRepository
 from app.repositories.baselines import BaselineRepository, ReviewQueueRepository
 from app.repositories.runs import ExecutionRepository, ResultRepository, RunRepository
 from app.repositories.suites import TestSuiteRepository
+from app.workers.celery_app import celery_app
 from app.workers.evaluation_tasks import run_evaluation
 
 router = APIRouter()
@@ -59,6 +60,8 @@ class RunResponse(BaseModel):
     completed_at: datetime | str | None = None
     created_at: datetime | str
     error_message: str | None = None
+    gate_decision: str | None = None
+    gate_summary: str | None = None
 
     class Config:
         from_attributes = True
@@ -184,6 +187,11 @@ async def get_stats(
     )
 
 
+def _run_in_process(run_id: str) -> None:
+    logger.info("run_eager_dispatch", run_id=run_id)
+    run_evaluation.apply(args=[run_id])
+
+
 @router.post("", response_model=RunResponse, status_code=201, include_in_schema=False)
 @router.post("/", response_model=RunResponse, status_code=201)
 async def create_run(
@@ -225,8 +233,22 @@ async def create_run(
         created_by=UUID(current_user.sub),
     )
     new_run = await run_repo.create(new_run)
+    # Commit before dispatching so the worker can see the run.
+    await run_repo.session.commit()
 
-    background_tasks.add_task(run_evaluation.delay, str(new_run.id))
+    if celery_app.conf.task_always_eager:
+        # Dev/test mode: run in-process after the response is sent.
+        background_tasks.add_task(_run_in_process, str(new_run.id))
+    else:
+        try:
+            run_evaluation.apply_async(args=[str(new_run.id)], retry=False)
+        except Exception as e:
+            logger.error("run_dispatch_failed", run_id=str(new_run.id), error=str(e))
+            new_run.status = RunStatus.FAILED
+            new_run.error_message = f"Could not queue run: {e}"
+            new_run.completed_at = datetime.utcnow()
+            await run_repo.session.commit()
+            raise TaskQueueUnavailableError({"run_id": str(new_run.id)}) from e
 
     logger.info(
         "run_created", run_id=str(new_run.id), suite_id=str(suite.id), agent_id=str(agent.id)

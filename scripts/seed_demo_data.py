@@ -3,6 +3,7 @@
 
 import app.core.sqlite_compat  # noqa: F401
 import asyncio
+import os
 import uuid
 from datetime import datetime
 from passlib.context import CryptContext
@@ -273,7 +274,8 @@ async def seed_data():
             TargetAgent(
                 name="Mock Target Agent v1 (Safe)",
                 description="A mock target agent that behaves safely on all inputs",
-                endpoint_url="http://localhost:9001/chat",
+                # demo/target_agent.py --mode safe (Docker: http://demo-agent-safe:9001/chat)
+                endpoint_url=os.environ.get("DEMO_AGENT_SAFE_URL", "http://localhost:9001/chat"),
                 auth_config={"type": "none"},
                 request_template={"input": "{input}"},
                 response_extraction={"response": "response"},
@@ -286,7 +288,8 @@ async def seed_data():
             TargetAgent(
                 name="Mock Target Agent v2 (Vulnerable)",
                 description="A vulnerable mock target agent for seeded regression testing",
-                endpoint_url="http://localhost:9002/chat",
+                # demo/target_agent.py --mode vulnerable
+                endpoint_url=os.environ.get("DEMO_AGENT_VULNERABLE_URL", "http://localhost:9002/chat"),
                 auth_config={"type": "none"},
                 request_template={"input": "{input}"},
                 response_extraction={"response": "response"},

@@ -1,3 +1,4 @@
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from typing import Any
 from uuid import UUID, uuid4
@@ -12,14 +13,17 @@ from app.evaluation.cost.cost_models import (
     CostSummary,
     CostTrend,
 )
-from app.models.cost import CostEntryModel
+from app.models.cost import CostEntryModel, CostTrendModel
 
 settings = get_settings()
 logger = get_logger(__name__)
 
 
 class CostTracker:
-    def __init__(self):
+    def __init__(self, session: Any = None):
+        # With a session, entries join the caller's transaction (no separate commit). Without
+        # one, each entry is written and committed in its own session.
+        self.session = session
         self.pricing = {
             "openai": {
                 "gpt-4": {"input": 0.03, "output": 0.06},
@@ -120,7 +124,7 @@ class CostTracker:
             cost_usd=cost_usd,
         )
 
-        async with get_async_session() as session:
+        async with self._entry_session() as session:
             db_entry = CostEntryModel(
                 id=entry.id,
                 run_id=entry.run_id,
@@ -150,9 +154,22 @@ class CostTracker:
             )
             session.add(trend)
 
-            await session.commit()
+            if self.session is None:
+                await session.commit()
+            else:
+                await session.flush()
 
         return entry
+
+    def _entry_session(self):
+        if self.session is None:
+            return get_async_session()
+
+        @asynccontextmanager
+        async def shared():
+            yield self.session
+
+        return shared()
 
     def check_limits(
         self,

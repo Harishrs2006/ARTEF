@@ -9,36 +9,46 @@ settings = get_settings()
 
 _is_sqlite = settings.DATABASE_URL.startswith("sqlite")
 
-if _is_sqlite:
-    import json
-    import sqlite3
-    import uuid
-    from datetime import date, datetime
 
-    sqlite3.register_adapter(uuid.UUID, lambda u: str(u))
+def _engine_options(pooled: bool) -> dict:
+    """Engine options for this database. pooled=False gives a NullPool engine for code that
+    runs in its own event loop (Celery tasks), where pooled connections must not be shared."""
+    from sqlalchemy.pool import NullPool, StaticPool
 
-    def _sqlite_json_serializer(obj):
-        if isinstance(obj, (datetime, date)):
-            return obj.isoformat()
-        raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
+    if _is_sqlite:
+        import json
+        import sqlite3
+        import uuid
+        from datetime import date, datetime
 
-    from sqlalchemy.pool import StaticPool
-    engine = create_async_engine(
-        settings.DATABASE_URL,
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-        echo=settings.DEBUG,
-        json_serializer=lambda o: json.dumps(o, default=_sqlite_json_serializer),
-    )
-else:
-    engine = create_async_engine(
-        settings.DATABASE_URL,
-        pool_size=settings.DATABASE_POOL_SIZE,
-        max_overflow=settings.DATABASE_MAX_OVERFLOW,
-        pool_timeout=settings.DATABASE_POOL_TIMEOUT,
-        pool_pre_ping=True,
-        echo=settings.DEBUG,
-    )
+        sqlite3.register_adapter(uuid.UUID, lambda u: str(u))
+
+        def _sqlite_json_serializer(obj):
+            if isinstance(obj, (datetime, date)):
+                return obj.isoformat()
+            raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
+
+        in_memory = ":memory:" in settings.DATABASE_URL
+        return {
+            # 30s busy timeout: the API and a worker may write to the same file concurrently.
+            "connect_args": {"check_same_thread": False, "timeout": 30},
+            # An in-memory database exists only on one connection; a file can use one per session.
+            "poolclass": StaticPool if in_memory else NullPool,
+            "echo": settings.DEBUG,
+            "json_serializer": lambda o: json.dumps(o, default=_sqlite_json_serializer),
+        }
+    if not pooled:
+        return {"poolclass": NullPool, "echo": settings.DEBUG}
+    return {
+        "pool_size": settings.DATABASE_POOL_SIZE,
+        "max_overflow": settings.DATABASE_MAX_OVERFLOW,
+        "pool_timeout": settings.DATABASE_POOL_TIMEOUT,
+        "pool_pre_ping": True,
+        "echo": settings.DEBUG,
+    }
+
+
+engine = create_async_engine(settings.DATABASE_URL, **_engine_options(pooled=True))
 
 async_session_maker = async_sessionmaker(
     engine,
@@ -46,6 +56,14 @@ async_session_maker = async_sessionmaker(
     expire_on_commit=False,
     autoflush=False,
 )
+
+
+def create_task_session_maker():
+    """A fresh engine + session factory for one Celery task (one event loop)."""
+    task_engine = create_async_engine(settings.DATABASE_URL, **_engine_options(pooled=False))
+    return task_engine, async_sessionmaker(
+        task_engine, class_=AsyncSession, expire_on_commit=False, autoflush=False
+    )
 
 
 @asynccontextmanager

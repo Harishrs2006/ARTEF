@@ -1,9 +1,56 @@
-import pytest
-from unittest.mock import patch, MagicMock, mock_open
-from datetime import datetime, timedelta
-from uuid import uuid4
+import os
+import tempfile
+from pathlib import Path
 
-from app.core.config import Settings
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
+
+# Test-only environment. Must run before any `app` module calls get_settings(),
+# so it lives at import time of the root conftest. setdefault lets CI override.
+_TEST_DIR = Path(tempfile.mkdtemp(prefix="artef-tests-"))
+
+
+def _write_test_keys(directory: Path) -> tuple[Path, Path]:
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    private_path = directory / "test_private.pem"
+    public_path = directory / "test_public.pem"
+    private_path.write_bytes(
+        key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        )
+    )
+    public_path.write_bytes(
+        key.public_key().public_bytes(
+            serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo
+        )
+    )
+    return private_path, public_path
+
+
+_private_key, _public_key = _write_test_keys(_TEST_DIR)
+for _name, _value in {
+    "SECRET_KEY": "test-only-secret-key-not-used-anywhere-0123456789",
+    "DATABASE_URL": f"sqlite+aiosqlite:///{(_TEST_DIR / 'test.db').as_posix()}",
+    "REDIS_URL": "redis://localhost:6379/0",
+    "CELERY_BROKER_URL": "memory://",
+    "CELERY_RESULT_BACKEND": "cache+memory://",
+    "JWT_PRIVATE_KEY_PATH": str(_private_key),
+    "JWT_PUBLIC_KEY_PATH": str(_public_key),
+    "EVAL_MODE": "local",
+    "DEBUG": "false",
+    "CELERY_TASK_ALWAYS_EAGER": "true",
+    "TARGET_AGENT_BLOCK_PRIVATE_IPS": "false",  # integration tests call a local target agent
+}.items():
+    os.environ.setdefault(_name, _value)
+
+import pytest  # noqa: E402
+from unittest.mock import patch, MagicMock, mock_open  # noqa: E402
+from datetime import datetime, timedelta  # noqa: E402
+from uuid import uuid4  # noqa: E402
+
+from app.core.config import Settings  # noqa: E402
 
 
 @pytest.fixture
@@ -17,8 +64,8 @@ def test_settings():
         CELERY_RESULT_BACKEND="redis://localhost:6379/2",
         ENVIRONMENT="testing",
         DEBUG=False,
-        JWT_PRIVATE_KEY_PATH="",
-        JWT_PUBLIC_KEY_PATH="",
+        JWT_PRIVATE_KEY_PATH=os.environ["JWT_PRIVATE_KEY_PATH"],
+        JWT_PUBLIC_KEY_PATH=os.environ["JWT_PUBLIC_KEY_PATH"],
         EVAL_MODE="local",
         DEV_MOCK_JUDGE=True,
         DEV_MOCK_TARGET_AGENT=True,
@@ -49,19 +96,18 @@ def sample_access_token():
     """Generate a valid access token for testing."""
     from app.core.security import create_access_token
 
-    with patch("app.core.config.get_settings", return_value=test_settings()), \
-         patch("builtins.open", mock_open(read_data="fake_key")):
-        return create_access_token(
-            data={
-                "sub": str(uuid4()),
-                "username": "test_user",
-                "email": "test@example.com",
-                "roles": ["admin"],
-                "scopes": ["admin", "safety_engineer"],
-                "type": "access",
-            },
-            expires_delta=timedelta(hours=1),
-        )
+    # Signed with the throwaway RSA keys generated at the top of this file.
+    return create_access_token(
+        data={
+            "sub": str(uuid4()),
+            "username": "test_user",
+            "email": "test@example.com",
+            "roles": ["admin"],
+            "scopes": ["admin", "safety_engineer"],
+            "type": "access",
+        },
+        expires_delta=timedelta(hours=1),
+    )
 
 
 @pytest.fixture
@@ -75,20 +121,17 @@ def viewer_token():
     """Generate a viewer access token."""
     from app.core.security import create_access_token
 
-    with patch("app.core.config.get_settings", return_value=test_settings()), \
-         patch("builtins.open", mock_open(read_data="fake_key")):
-        token = create_access_token(
-            data={
-                "sub": str(uuid4()),
-                "username": "viewer_user",
-                "email": "viewer@example.com",
-                "roles": ["viewer"],
-                "scopes": ["viewer"],
-                "type": "access",
-            },
-            expires_delta=timedelta(hours=1),
-        )
-    return token
+    return create_access_token(
+        data={
+            "sub": str(uuid4()),
+            "username": "viewer_user",
+            "email": "viewer@example.com",
+            "roles": ["viewer"],
+            "scopes": ["viewer"],
+            "type": "access",
+        },
+        expires_delta=timedelta(hours=1),
+    )
 
 
 @pytest.fixture

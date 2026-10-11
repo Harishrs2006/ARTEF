@@ -51,6 +51,15 @@ class PickleDetector(BaseDetector):
             "subprocess",
             "commands",
             "popen2",
+            # os.* functions pickle under the platform module name
+            "nt",
+            "posix",
+        }
+        # Callables that execute code or commands, whatever module they come from.
+        self.dangerous_callables = {
+            "system", "popen", "spawn", "spawnl", "spawnv", "execv", "execve",
+            "eval", "exec", "compile", "__import__", "getattr", "apply", "call",
+            "check_call", "check_output", "run", "Popen", "load", "loads",
         }
 
     async def scan(self, path: Path) -> list[ScanFinding]:
@@ -68,29 +77,47 @@ class PickleDetector(BaseDetector):
         return findings
 
     def _scan_pickle_file(self, file_path: Path) -> list[ScanFinding]:
-        findings = []
+        """Statically inspect pickle opcodes. The file is never unpickled: loading an
+        untrusted pickle executes whatever it imports, which is exactly what we scan for."""
+        import pickletools
 
+        findings: list[ScanFinding] = []
         try:
-            import pickletools
-
-            with open(file_path, "rb") as f:
-                data = f.read()
-
-            try:
-                pickletools.dis(data)
-            except Exception as e:
-                pass
-
-            with open(file_path, "rb") as f:
-                try:
-                    obj = pickle.load(f)
-                    findings.extend(self._analyze_object(obj, str(file_path)))
-                except Exception:
-                    pass
-
-        except Exception:
-            pass
-
+            data = file_path.read_bytes()
+            recent_strings: list[str] = []
+            for opcode, arg, _pos in pickletools.genops(data):
+                if opcode.name in ("SHORT_BINUNICODE", "BINUNICODE", "UNICODE", "BINSTRING", "SHORT_BINSTRING"):
+                    recent_strings = (recent_strings + [str(arg)])[-2:]
+                    continue
+                if opcode.name == "GLOBAL":  # protocol 0-2: arg is "module name"
+                    module, _, name = str(arg).partition(" ")
+                elif opcode.name == "STACK_GLOBAL" and len(recent_strings) == 2:
+                    module, name = recent_strings  # protocol 4+: pushed as two strings
+                else:
+                    continue
+                root = module.split(".")[0]
+                if root in self.dangerous_modules or name in self.dangerous_callables:
+                    findings.append(
+                        ScanFinding(
+                            detector="PickleDetector",
+                            finding_type="dangerous_import",
+                            severity=SeverityLevel.CRITICAL,
+                            description=f"Pickle imports {module}.{name}, which can execute code when loaded",
+                            file_path=str(file_path),
+                            metadata={"module": module, "name": name},
+                        )
+                    )
+        except Exception as e:
+            findings.append(
+                ScanFinding(
+                    detector="PickleDetector",
+                    finding_type="unparseable_pickle",
+                    severity=SeverityLevel.MEDIUM,
+                    description=f"Could not parse pickle opcodes: {e}",
+                    file_path=str(file_path),
+                    metadata={},
+                )
+            )
         return findings
 
     def _analyze_object(self, obj: Any, file_path: str) -> list[ScanFinding]:

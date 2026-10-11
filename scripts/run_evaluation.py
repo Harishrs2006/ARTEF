@@ -2,6 +2,7 @@
 """Run an evaluation from the command line."""
 
 import asyncio
+import sys
 import argparse
 import uuid
 from datetime import datetime
@@ -12,7 +13,7 @@ from sqlalchemy.orm import sessionmaker
 from app.repositories.agents import TargetAgentRepository
 from app.repositories.suites import TestSuiteRepository
 from app.repositories.runs import RunRepository, ExecutionRepository, ResultRepository
-from app.repositories.baselines import BaselineRepository
+from app.repositories.baselines import BaselineRepository, RegressionRepository
 from app.services.execution_service import ExecutionService
 from app.services.scoring_service import ScoringService
 from app.evaluation.regression.detector import RegressionDetector

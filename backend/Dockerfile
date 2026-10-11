@@ -1,4 +1,5 @@
-FROM python:3.11-slim as base
+# Build from the repository root:  docker build -f backend/Dockerfile .
+FROM python:3.11-slim AS base
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -13,21 +14,27 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-COPY pyproject.toml uv.lock* ./
+# Pinned, cross-platform lockfile generated from pyproject.toml (see README).
+COPY requirements.lock ./
+RUN pip install -r requirements.lock
 
-RUN pip install --no-cache-dir uv && \
-    uv pip install --system --no-cache -r pyproject.toml
-
+COPY pyproject.toml ./
 COPY backend ./backend
 COPY evaluation ./evaluation
+COPY scripts ./scripts
+COPY demo ./demo
 
-FROM base as development
+# The `app` package lives in backend/, so run from there (uvicorn app.main:app,
+# celery -A app.workers.celery_app, python ../scripts/...).
+WORKDIR /app/backend
+
+FROM base AS development
 
 EXPOSE 8000
 
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
 
-FROM base as production
+FROM base AS production
 
 RUN useradd --create-home --shell /bin/bash appuser && \
     chown -R appuser:appuser /app

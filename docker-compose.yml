@@ -35,7 +35,7 @@ services:
     image: chromadb/chroma:0.4.22
     container_name: redteam-chromadb
     ports:
-      - "8000:8000"
+      - "8001:8000"  # host 8001; the API owns host port 8000
     volumes:
       - chroma_data:/chroma/chroma
     environment:
@@ -64,6 +64,7 @@ services:
     build:
       context: .
       dockerfile: backend/Dockerfile
+      target: development
     container_name: redteam-backend
     environment:
       - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/redteam
@@ -76,7 +77,19 @@ services:
       - S3_ACCESS_KEY=minioadmin
       - S3_SECRET_KEY=minioadmin
       - S3_BUCKET=redteam-artifacts
-      - EVAL_MODE=production
+      # Dev-only defaults; override in a root .env file (never commit real secrets).
+      - SECRET_KEY=${SECRET_KEY:-dev-only-insecure-secret-key-change-me-0123456789}
+      - JWT_PRIVATE_KEY_PATH=/app/backend/.keys/jwt_private.pem
+      - JWT_PUBLIC_KEY_PATH=/app/backend/.keys/jwt_public.pem
+      - DEBUG=false
+      # local = deterministic judge for llm_rubric tests; live needs PRIMARY_JUDGE_API_KEY etc.
+      - EVAL_MODE=${EVAL_MODE:-local}
+      - PRIMARY_JUDGE_API_KEY=${PRIMARY_JUDGE_API_KEY:-}
+      - SECONDARY_JUDGE_API_KEY=${SECONDARY_JUDGE_API_KEY:-}
+      # The demo agents run inside this Docker network (private addresses).
+      - TARGET_AGENT_BLOCK_PRIVATE_IPS=false
+      - DEMO_AGENT_SAFE_URL=http://demo-agent-safe:9001/chat
+      - DEMO_AGENT_VULNERABLE_URL=http://demo-agent-vulnerable:9002/chat
     ports:
       - "8000:8000"
     depends_on:
@@ -89,15 +102,16 @@ services:
       minio:
         condition: service_healthy
     volumes:
-      - ./backend:/app
+      - ./backend:/app/backend
       - ./evaluation:/app/evaluation:ro
 
   worker:
     build:
       context: .
       dockerfile: backend/Dockerfile
+      target: development
     container_name: redteam-worker
-    command: celery -A app.workers.celery_app worker --loglevel=info --concurrency=4
+    command: celery -A app.workers.celery_app worker --loglevel=info --concurrency=2 -Q default,evaluation,redteam,maintenance
     environment:
       - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/redteam
       - REDIS_URL=redis://redis:6379/0
@@ -109,7 +123,19 @@ services:
       - S3_ACCESS_KEY=minioadmin
       - S3_SECRET_KEY=minioadmin
       - S3_BUCKET=redteam-artifacts
-      - EVAL_MODE=production
+      # Dev-only defaults; override in a root .env file (never commit real secrets).
+      - SECRET_KEY=${SECRET_KEY:-dev-only-insecure-secret-key-change-me-0123456789}
+      - JWT_PRIVATE_KEY_PATH=/app/backend/.keys/jwt_private.pem
+      - JWT_PUBLIC_KEY_PATH=/app/backend/.keys/jwt_public.pem
+      - DEBUG=false
+      # local = deterministic judge for llm_rubric tests; live needs PRIMARY_JUDGE_API_KEY etc.
+      - EVAL_MODE=${EVAL_MODE:-local}
+      - PRIMARY_JUDGE_API_KEY=${PRIMARY_JUDGE_API_KEY:-}
+      - SECONDARY_JUDGE_API_KEY=${SECONDARY_JUDGE_API_KEY:-}
+      # The demo agents run inside this Docker network (private addresses).
+      - TARGET_AGENT_BLOCK_PRIVATE_IPS=false
+      - DEMO_AGENT_SAFE_URL=http://demo-agent-safe:9001/chat
+      - DEMO_AGENT_VULNERABLE_URL=http://demo-agent-vulnerable:9002/chat
     depends_on:
       postgres:
         condition: service_healthy
@@ -120,24 +146,37 @@ services:
       minio:
         condition: service_healthy
     volumes:
-      - ./backend:/app
+      - ./backend:/app/backend
       - ./evaluation:/app/evaluation:ro
 
   frontend:
     build:
       context: ./frontend
       dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: http://localhost:8000/api/v1
     container_name: redteam-frontend
-    environment:
-      - NEXT_PUBLIC_API_URL=http://localhost:8000/api/v1
     ports:
       - "3000:3000"
     depends_on:
       - backend
-    volumes:
-      - ./frontend:/app
-      - /app/node_modules
-      - /app/.next
+
+  # Demo target agents (the systems under test). Not part of the framework itself.
+  demo-agent-safe:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+      target: development
+    container_name: redteam-demo-agent-safe
+    command: python /app/demo/target_agent.py --mode safe --host 0.0.0.0 --port 9001
+
+  demo-agent-vulnerable:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+      target: development
+    container_name: redteam-demo-agent-vulnerable
+    command: python /app/demo/target_agent.py --mode vulnerable --host 0.0.0.0 --port 9002
 
   prometheus:
     image: prom/prometheus:v2.48.0

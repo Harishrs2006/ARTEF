@@ -29,8 +29,8 @@ api.interceptors.response.use(
 
     if (error.response?.status === 401 && !originalRequest._retry) {
       originalRequest._retry = true;
-      const { refreshAccessToken } = await import("./auth");
-      await refreshAccessToken();
+      const { useAuth } = await import("./auth");
+      await useAuth.getState().refreshAccessToken();
       const token = getAccessToken();
       if (token && originalRequest.headers) {
         originalRequest.headers.Authorization = `Bearer ${token}`;

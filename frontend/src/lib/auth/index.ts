@@ -32,7 +32,9 @@ export const useAuth = create<AuthState>()(
       accessToken: null,
       refreshToken: null,
       isAuthenticated: false,
-      isLoading: false,
+      // Start "loading" so page guards wait for rehydration + fetchUser instead of
+      // redirecting to /login on the pre-hydration render (onRehydrateStorage clears it).
+      isLoading: true,
 
       login: async (username: string, password: string) => {
         const response = await api.post("/auth/login", { username, password });
@@ -94,11 +96,15 @@ export const useAuth = create<AuthState>()(
         isAuthenticated: state.isAuthenticated,
       }),
       onRehydrateStorage: () => (state) => {
-        if (state?.accessToken) {
-          state.fetchUser();
-        } else {
-          useAuth.setState({ isLoading: false });
-        }
+        // Deferred: with synchronous localStorage this callback runs while `useAuth` is
+        // still being created, so touching the store directly would throw.
+        queueMicrotask(() => {
+          if (state?.accessToken) {
+            useAuth.getState().fetchUser();
+          } else {
+            useAuth.setState({ isLoading: false });
+          }
+        });
       },
     }
   )

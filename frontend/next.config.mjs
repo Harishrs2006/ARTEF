@@ -1,6 +1,8 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  reactStrictMode: false, // Disable strict mode to reduce web vitals
+  reactStrictMode: false,
+  // Standalone server for the Docker image only: on Windows it needs symlink privileges.
+  output: process.env.NEXT_OUTPUT_STANDALONE === "true" ? "standalone" : undefined,
   experimental: {
     optimizePackageImports: ["lucide-react", "@radix-ui/react-icons"],
   },
@@ -9,30 +11,17 @@ const nextConfig = {
   },
   // Production optimizations
   productionBrowserSourceMaps: false,
-  // Suppress non-critical errors in development
   onDemandEntries: {
     maxInactiveAge: 25 * 1000,
     pagesBufferLength: 2,
   },
-  // Webpack config to exclude web-vitals
-  webpack: (config, { dev, isServer }) => {
-    if (!isServer) {
-      // Completely remove web-vitals from bundle
-      config.resolve.alias = {
-        ...config.resolve.alias,
-        'next/dist/compiled/web-vitals': false,
-        'web-vitals': false,
-      };
-      
-      // DefinePlugin skipped (web-vitals aliased to false above is sufficient)
-    }
-    return config;
-  },
   async rewrites() {
+    // BACKEND_URL lets Docker point at the api service; local dev defaults to :8000.
+    const backend = process.env.BACKEND_URL || "http://localhost:8000";
     return [
       {
         source: "/api/v1/:path*",
-        destination: "http://localhost:8000/api/v1/:path*",
+        destination: `${backend}/api/v1/:path*`,
       },
     ];
   },

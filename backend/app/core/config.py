@@ -1,4 +1,4 @@
-from functools import lru_cache
+﻿from functools import lru_cache
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -70,25 +70,23 @@ class Settings(BaseSettings):
     TARGET_AGENT_ALLOWED_HOSTS: str = ""
     TARGET_AGENT_BLOCK_PRIVATE_IPS: bool = True
 
-    CHROMA_HOST: str = "localhost"
+    CHROMA_HOST: str = ""
     CHROMA_PORT: int = 8000
     CHROMA_COLLECTION_PREFIX: str = "redteam"
 
-    S3_ENDPOINT_URL: str = "http://localhost:9000"
+    S3_ENDPOINT_URL: str = ""
     S3_ACCESS_KEY: str = ""  # Optional - only required if using S3 storage
     S3_SECRET_KEY: str = ""  # Optional - only required if using S3 storage
     S3_BUCKET: str = "redteam-artifacts"
     S3_REGION: str = "us-east-1"
 
     LOCAL_STORAGE_PATH: str = "./storage"
-    
-    # Storage backend selection
+
     STORAGE_BACKEND: str = "local"  # Options: "local", "s3"
-    
+
     @field_validator("S3_ACCESS_KEY", "S3_SECRET_KEY")
     @classmethod
     def validate_s3_credentials(cls, v: str, info) -> str:
-        # Only require S3 credentials if S3 backend is selected
         if info.data.get("STORAGE_BACKEND") == "s3" and not v:
             raise ValueError("S3 credentials required when STORAGE_BACKEND=s3")
         return v
@@ -104,7 +102,7 @@ class Settings(BaseSettings):
     OIDC_CLIENT_SECRET: str = ""
     OIDC_SCOPES: str = "openid,profile,email"
 
-    CORS_ORIGINS: str | list[str] = "http://localhost:3000,http://localhost:8000"
+    CORS_ORIGINS: str | list[str] = ""
     CORS_ALLOW_CREDENTIALS: bool = True
 
     RATE_LIMIT_REQUESTS: int = 100

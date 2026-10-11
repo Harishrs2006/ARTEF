@@ -1,6 +1,7 @@
-"use client";
+﻿"use client";
 
 import { useEffect, useState, useCallback } from "react";
+import { useRouter } from "next/navigation";
 import { DashboardLayout } from "@/components/ui/dashboard-layout";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -14,8 +15,8 @@ import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { api } from "@/lib/api";
 import { formatDate, getSeverityColor } from "@/lib/utils";
-import { useAuth } from "@/lib/auth";
-import { Plus, Upload, Search, FileText, Eye, Edit, Trash2, Download, AlertTriangle } from "lucide-react";
+import { useAuth, getAccessToken } from "@/lib/auth";
+import { Plus, Upload, Search, FileText, Eye, Edit, Trash2, Download, AlertTriangle, RefreshCw } from "lucide-react";
 
 interface TestCase {
   id: string;
@@ -41,6 +42,7 @@ interface TestSuite {
 }
 
 export default function SuitesPage() {
+  const router = useRouter();
   const { isAuthenticated, isLoading } = useAuth();
   const [suites, setSuites] = useState<TestSuite[]>([]);
   const [loading, setLoading] = useState(true);
@@ -52,27 +54,51 @@ export default function SuitesPage() {
   const [importContent, setImportContent] = useState("");
   const [newSuiteName, setNewSuiteName] = useState("");
   const [newSuiteDescription, setNewSuiteDescription] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
 
-  const fetchSuites = useCallback(async () => {
+  const fetchSuites = useCallback(async (isRefresh = false) => {
+    if (isRefresh) {
+      setRefreshing(true);
+    } else {
+      setLoading(true);
+    }
+    setError(null);
+    
     try {
       const res = await api.get("/suites");
       setSuites(res.data);
     } catch (error) {
       console.error("Failed to fetch suites:", error);
+      setError("No test suites found. Create your first suite to get started.");      setSuites([]);
     } finally {
       setLoading(false);
+      setRefreshing(false);
     }
   }, []);
 
   useEffect(() => {
-    if (!isLoading) {
-      if (!isAuthenticated) {
-        window.location.href = "/login";
-      } else {
-        fetchSuites();
-      }
+    const token = getAccessToken();
+    if (token) {
+      fetchSuites();
+      return;
     }
-  }, [isAuthenticated, isLoading, fetchSuites]);
+    if (!isLoading && !isAuthenticated) {
+      router.replace("/login");
+    } else if (!isLoading && isAuthenticated) {
+      fetchSuites();
+    }
+  }, [isAuthenticated, isLoading, fetchSuites, router]);
+
+  useEffect(() => {
+    if (!isAuthenticated || loading) return;
+    
+    const interval = setInterval(() => {
+      fetchSuites(true);
+    }, 30000);
+    
+    return () => clearInterval(interval);
+  }, [isAuthenticated, loading, fetchSuites]);
 
   const handleCreateSuite = async () => {
     if (!newSuiteName.trim()) return;
@@ -125,7 +151,7 @@ export default function SuitesPage() {
 
   const categories = Array.from(new Set(suites.flatMap(s => s.test_cases.map(tc => tc.category))));
 
-  if (isLoading || !isAuthenticated) {
+  if (isLoading && !getAccessToken()) {
     return (
       <DashboardLayout>
         <div className="flex h-[calc(100vh-4rem)] items-center justify-center">
@@ -142,8 +168,22 @@ export default function SuitesPage() {
           <div>
             <h1 className="text-3xl font-bold">Test Suites</h1>
             <p className="text-muted-foreground">Manage test suites and test cases</p>
+            {error && (
+              <p className="text-sm text-destructive mt-1 flex items-center gap-1">
+                <AlertTriangle className="h-3 w-3" /> {error}
+              </p>
+            )}
           </div>
           <div className="flex gap-2">
+            <Button 
+              variant="outline" 
+              size="icon"
+              onClick={() => fetchSuites(true)}
+              disabled={refreshing}
+              title="Refresh suites"
+            >
+              <RefreshCw className={`h-4 w-4 ${refreshing ? "animate-spin" : ""}`} />
+            </Button>
             <Dialog open={showCreateDialog} onOpenChange={setShowCreateDialog}>
               <DialogTrigger asChild>
                 <Button><Plus className="mr-2 h-4 w-4" /> New Suite</Button>

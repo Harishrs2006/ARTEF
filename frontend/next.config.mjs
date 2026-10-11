@@ -1,11 +1,23 @@
 /** @type {import('next').NextConfig} */
+const apiProxyTarget = (process.env.API_PROXY_TARGET || process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api/v1").replace(/\/+$/, "");
+const normalizedApiProxyTarget = apiProxyTarget.endsWith("/api/v1") ? apiProxyTarget : `${apiProxyTarget}/api/v1`;
+
 const nextConfig = {
   reactStrictMode: false, // Disable strict mode to reduce web vitals
+  eslint: {
+    // Skip ESLint during production builds to avoid hanging
+    // Run `npm run lint` separately for linting
+    ignoreDuringBuilds: true,
+  },
+  typescript: {
+    // Type checking is already verified separately
+    ignoreBuildErrors: false,
+  },
   experimental: {
     optimizePackageImports: ["lucide-react", "@radix-ui/react-icons"],
   },
   images: {
-    domains: ["localhost"],
+    remotePatterns: [{ protocol: "http", hostname: "localhost" }],
   },
   // Production optimizations
   productionBrowserSourceMaps: false,
@@ -32,7 +44,7 @@ const nextConfig = {
     return [
       {
         source: "/api/v1/:path*",
-        destination: "http://localhost:8000/api/v1/:path*",
+        destination: `${normalizedApiProxyTarget}/:path*`,
       },
     ];
   },

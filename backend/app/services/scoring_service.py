@@ -1,4 +1,4 @@
-import json
+﻿import json
 from datetime import datetime
 from typing import Any
 from uuid import UUID
@@ -16,7 +16,7 @@ from app.domain.value_objects import (
     MatcherConfig,
     ScoringResult,
 )
-from app.evaluation.cost.cost_tracker import CostTracker, CostCategory
+from app.evaluation.cost.cost_tracker import CostCategory, CostTracker
 from app.evaluation.judges.fallback_judge import FallbackJudge
 from app.evaluation.judges.llm_judge import LLMJudge
 from app.evaluation.matchers.exact import ExactMatcher
@@ -74,7 +74,6 @@ class ScoringService:
 
             scoring_result = await self._score_execution(execution, test_case)
 
-            # Track cost for this scoring operation
             if scoring_result.tokens_used > 0:
                 await self.cost_tracker.track_cost(
                     category=CostCategory.LLM_INFERENCE,
@@ -115,10 +114,10 @@ class ScoringService:
             )
             await self.result_repo.create(result)
 
-            # FIXED: Use database-level atomic increment to prevent race conditions
             from sqlalchemy import update
+
             from app.models.run import Run as RunModel
-            
+
             if scoring_result.verdict == Verdict.PASS:
                 await self.execution_repo.session.execute(
                     update(RunModel).where(RunModel.id == run_id).values(passed_count=RunModel.passed_count + 1)
@@ -132,7 +131,6 @@ class ScoringService:
                     update(RunModel).where(RunModel.id == run_id).values(inconclusive_count=RunModel.inconclusive_count + 1)
                 )
 
-            # Update cost and latency atomically
             await self.execution_repo.session.execute(
                 update(RunModel).where(RunModel.id == run_id).values(
                     total_cost_usd=RunModel.total_cost_usd + scoring_result.estimated_cost,

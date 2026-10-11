@@ -67,21 +67,23 @@ class TestDecodeToken:
 class TestLoadKeys:
     """Test key loading functions."""
 
-    def test_load_private_key_without_path_raises_error(self):
-        """Test that loading private key without path raises ValueError."""
+    def test_load_private_key_without_path_falls_back_to_default_key(self):
+        """Test that loading the private key without a configured path falls back to the bundled default key."""
         with patch("app.core.security.get_settings") as mock_settings:
             mock_settings.return_value.JWT_PRIVATE_KEY_PATH = ""
             mock_settings.return_value.JWT_ALGORITHM = "RS256"
-            with pytest.raises(ValueError, match="JWT_PRIVATE_KEY_PATH is required"):
-                load_private_key()
+            key, algorithm = load_private_key()
+            assert algorithm == "RS256"
+            assert "BEGIN RSA PRIVATE KEY" in key
 
-    def test_load_public_key_without_path_raises_error(self):
-        """Test that loading public key without path raises ValueError."""
+    def test_load_public_key_without_path_falls_back_to_default_key(self):
+        """Test that loading the public key without a configured path falls back to the bundled default key."""
         with patch("app.core.security.get_settings") as mock_settings:
             mock_settings.return_value.JWT_PUBLIC_KEY_PATH = ""
             mock_settings.return_value.JWT_ALGORITHM = "RS256"
-            with pytest.raises(ValueError, match="JWT_PUBLIC_KEY_PATH is required"):
-                load_public_key()
+            key, algorithm = load_public_key()
+            assert algorithm == "RS256"
+            assert "BEGIN PUBLIC KEY" in key
 
 
 class TestRequireRole:

@@ -1,5 +1,6 @@
 import pytest
 
+from app.domain.entities import TargetAgent, TestSuite as DomainTestSuite
 from app.domain.value_objects import (
     CriteriaResult,
     EvidenceItem,
@@ -90,3 +91,32 @@ def test_scoring_result():
     assert result.test_case_id == "TEST_001"
     assert result.verdict == "PASS"
     assert result.confidence == 0.9
+
+
+def test_default_collection_fields_are_not_shared_between_instances():
+    suite_one = DomainTestSuite(name="Suite 1")
+    suite_two = DomainTestSuite(name="Suite 2")
+    suite_one.test_cases.append({"id": "case-1"})
+
+    agent_one = TargetAgent(name="Agent 1", endpoint_url="https://example.com")
+    agent_two = TargetAgent(name="Agent 2", endpoint_url="https://example.org")
+    agent_one.auth_config["api_key"] = "secret"
+
+    judge_one = JudgeOutput(
+        verdict="PASS",
+        confidence=0.9,
+        rationale="ok",
+        evidence=[EvidenceItem(source="target", text="correct")],
+    )
+    judge_two = JudgeOutput(
+        verdict="PASS",
+        confidence=0.8,
+        rationale="also ok",
+        evidence=[EvidenceItem(source="target", text="still correct")],
+    )
+    judge_one.evidence.append(EvidenceItem(source="target", text="extra"))
+
+    assert suite_two.test_cases == []
+    assert "api_key" not in agent_two.auth_config
+    assert len(judge_one.evidence) == 2
+    assert len(judge_two.evidence) == 1

@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """Health check script for production monitoring."""
 
 import sys
@@ -10,14 +10,16 @@ import chromadb
 import boto3
 from datetime import datetime
 
+
 async def check_service(name: str, check_func) -> bool:
     try:
         result = await check_func()
-        print(f"✅ {name}: OK")
+        print(f"[OK] {name}: OK")
         return True
     except Exception as e:
-        print(f"❌ {name}: {e}")
+        print(f"[ERROR] {name}: {e}")
         return False
+
 
 async def check_api(base_url: str):
     async with httpx.AsyncClient(timeout=10.0) as client:
@@ -27,24 +29,29 @@ async def check_api(base_url: str):
         if data.get("status") != "healthy":
             raise Exception(f"API not healthy: {data}")
 
+
 async def check_ready(base_url: str):
     async with httpx.AsyncClient(timeout=10.0) as client:
         resp = await client.get(f"{base_url}/ready")
         if resp.status_code != 200:
             raise Exception(f"Readiness check failed: {resp.status_code}")
 
+
 async def check_postgres(dsn: str):
     conn = await asyncpg.connect(dsn)
     await conn.execute("SELECT 1")
     await conn.close()
 
+
 async def check_redis(url: str):
     r = redis.from_url(url)
     r.ping()
 
+
 async def check_chromadb(host: str, port: int):
     client = chromadb.HttpClient(host=host, port=port)
     client.heartbeat()
+
 
 async def check_minio(endpoint: str, access_key: str, secret_key: str, bucket: str):
     client = boto3.client(
@@ -52,24 +59,40 @@ async def check_minio(endpoint: str, access_key: str, secret_key: str, bucket: s
         endpoint_url=endpoint,
         aws_access_key_id=access_key,
         aws_secret_access_key=secret_key,
-        region_name="us-east-1"
+        region_name="us-east-1",
     )
     client.head_bucket(Bucket=bucket)
 
+
 async def main():
     import os
-    
-    base_url = os.getenv("API_BASE_URL", "http://localhost:8000")
-    db_dsn = os.getenv("DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/redteam")
-    redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
-    chroma_host = os.getenv("CHROMA_HOST", "localhost")
-    chroma_port = int(os.getenv("CHROMA_PORT", "8000"))
-    minio_endpoint = os.getenv("S3_ENDPOINT_URL", "http://localhost:9000")
-    minio_access = os.getenv("S3_ACCESS_KEY", "minioadmin")
-    minio_secret = os.getenv("S3_SECRET_KEY", "minioadmin")
-    minio_bucket = os.getenv("S3_BUCKET", "redteam-artifacts")
 
-    print(f"🏥 Health Check - {datetime.utcnow().isoformat()}")
+    base_url = os.getenv("API_BASE_URL")
+    db_dsn = os.getenv("DATABASE_URL")
+    redis_url = os.getenv("REDIS_URL")
+    chroma_host = os.getenv("CHROMA_HOST")
+    chroma_port = int(os.getenv("CHROMA_PORT", "8000"))
+    minio_endpoint = os.getenv("S3_ENDPOINT_URL")
+    minio_access = os.getenv("S3_ACCESS_KEY")
+    minio_secret = os.getenv("S3_SECRET_KEY")
+    minio_bucket = os.getenv("S3_BUCKET")
+
+    required = {
+        "API_BASE_URL": base_url,
+        "DATABASE_URL": db_dsn,
+        "REDIS_URL": redis_url,
+        "CHROMA_HOST": chroma_host,
+        "S3_ENDPOINT_URL": minio_endpoint,
+        "S3_ACCESS_KEY": minio_access,
+        "S3_SECRET_KEY": minio_secret,
+        "S3_BUCKET": minio_bucket,
+    }
+    missing = [name for name, value in required.items() if not value]
+    if missing:
+        print("[ERROR] Missing required environment variables: " + ", ".join(missing))
+        sys.exit(1)
+
+    print(f"[HEALTH] Health Check - {datetime.utcnow().isoformat()}")
     print(f"   API Base URL: {base_url}")
     print()
 
@@ -88,11 +111,11 @@ async def main():
 
     print()
     if all(results):
-        print("✅ All health checks passed")
+        print("[OK] All health checks passed")
         sys.exit(0)
-    else:
-        print("❌ Some health checks failed")
-        sys.exit(1)
+    print("[ERROR] Some health checks failed")
+    sys.exit(1)
+
 
 if __name__ == "__main__":
     asyncio.run(main())

@@ -1,4 +1,4 @@
-from datetime import datetime
+﻿from datetime import datetime
 from typing import Any
 
 from pydantic import BaseModel, Field, field_validator
@@ -46,11 +46,11 @@ class LLMRubric(BaseModel):
 
 
 class TestCaseMetadata(BaseModel):
-    tags: list[str] = []
+    tags: list[str] = Field(default_factory=list)
     author: str | None = None
     description: str | None = None
-    references: list[str] = []
-    custom: dict[str, Any] = {}
+    references: list[str] = Field(default_factory=list)
+    custom: dict[str, Any] = Field(default_factory=dict)
 
 
 class ExpectedBehavior(BaseModel):
@@ -64,16 +64,12 @@ class EvidenceItem(BaseModel):
     """Structured evidence item for reproducibility and traceability."""
     source: str
     text: str
-    # Traceability fields
     trace_id: str | None = None
     span_id: str | None = None
-    # Metadata
-    metadata: dict[str, Any] = {}
-    # Provenance
+    metadata: dict[str, Any] = Field(default_factory=dict)
     collected_at: datetime = Field(default_factory=datetime.utcnow)
     collected_by: str | None = None  # component that collected this evidence
-    # Integrity
-    content_hash: str | None = None  # SHA256 of text for integrity verification
+    content_hash: str | None = None  # SHA256 of the text for integrity verification
 
 
 class CriteriaResult(BaseModel):
@@ -87,13 +83,12 @@ class JudgeOutput(BaseModel):
     verdict: Verdict
     confidence: float = Field(ge=0.0, le=1.0)
     rationale: str = Field(min_length=1)
-    evidence: list[EvidenceItem] = []
-    criteria_results: list[CriteriaResult] = []
+    evidence: list[EvidenceItem] = Field(default_factory=list)
+    criteria_results: list[CriteriaResult] = Field(default_factory=list)
 
     @field_validator("evidence")
     @classmethod
     def validate_evidence_not_empty(cls, v: list[EvidenceItem], info) -> list[EvidenceItem]:
-        # Only require evidence for PASS/FAIL verdicts, not INCONCLUSIVE
         verdict = info.data.get("verdict")
         if verdict in (Verdict.PASS, Verdict.FAIL) and not v:
             raise ValueError(f"Evidence list cannot be empty for {verdict} verdict")
@@ -116,11 +111,11 @@ class ScoringResult(BaseModel):
     judge_output: JudgeOutput | None = None
     second_judge_output: JudgeOutput | None = None
     judge_agreement: bool = True
-    evidence: list[EvidenceItem] = []
+    evidence: list[EvidenceItem] = Field(default_factory=list)
     execution_time_ms: int
     tokens_used: int = 0
     estimated_cost: float = 0.0
-    errors: list[str] = []
+    errors: list[str] = Field(default_factory=list)
 
 
 class RegressionFinding(BaseModel):
@@ -129,7 +124,7 @@ class RegressionFinding(BaseModel):
     current_verdict: Verdict
     regression_type: str
     severity: SeverityLevel
-    evidence: list[EvidenceItem] = []
+    evidence: list[EvidenceItem] = Field(default_factory=list)
     baseline_run_id: str
     current_run_id: str
 
@@ -138,13 +133,13 @@ class SeverityClassification(BaseModel):
     level: SeverityLevel
     rationale: str
     deterministic_override: bool = False
-    categories: list[str] = []
+    categories: list[str] = Field(default_factory=list)
 
 
 class GateResult(BaseModel):
     decision: str
     exit_code: int
-    regressions: list[RegressionFinding] = []
+    regressions: list[RegressionFinding] = Field(default_factory=list)
     critical_count: int = 0
     high_count: int = 0
     medium_count: int = 0
@@ -159,8 +154,8 @@ class CostBreakdown(BaseModel):
     input_tokens: int = 0
     output_tokens: int = 0
     estimated_cost_usd: float = 0.0
-    by_model: dict[str, dict[str, Any]] = {}
-    by_provider: dict[str, dict[str, Any]] = {}
+    by_model: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    by_provider: dict[str, dict[str, Any]] = Field(default_factory=dict)
 
 
 class EvidencePackage(BaseModel):
@@ -170,45 +165,37 @@ class EvidencePackage(BaseModel):
     cell_id: str | None = None
     trace_id: str
     span_id: str
-    
-    # Input/Output
+
     test_input: str
     expected_behavior: str
     actual_response: str
-    
-    # Evidence
-    assertion_evidence: list[EvidenceItem] = []
-    judge_evidence: list[EvidenceItem] = []
-    redteam_evidence: list[EvidenceItem] = []
-    
-    # Results
+
+    assertion_evidence: list[EvidenceItem] = Field(default_factory=list)
+    judge_evidence: list[EvidenceItem] = Field(default_factory=list)
+    redteam_evidence: list[EvidenceItem] = Field(default_factory=list)
+
     assertion_result: dict[str, Any] | None = None
     judge_result: dict[str, Any] | None = None
     redteam_result: dict[str, Any] | None = None
-    
-    # Final verdict
+
     final_verdict: str
     final_confidence: float
     final_severity: str | None = None
-    
-    # Metadata
+
     execution_time_ms: int
     tokens_used: int
     estimated_cost: float
-    model_info: dict[str, str] = {}
-    provider_info: dict[str, str] = {}
+    model_info: dict[str, str] = Field(default_factory=dict)
+    provider_info: dict[str, str] = Field(default_factory=dict)
     prompt_version: str | None = None
     dataset_version: str | None = None
-    
-    # Timestamps
+
     started_at: datetime
     completed_at: datetime
-    
-    # Integrity
+
     package_hash: str | None = None  # SHA256 of the entire package for integrity
-    
-    # Reproducibility
-    config_snapshot: dict[str, Any] = {}
+
+    config_snapshot: dict[str, Any] = Field(default_factory=dict)
     reproducibility_verified: bool = False
     reproducibility_check_at: datetime | None = None
     reproducibility_check_result: dict[str, Any] | None = None

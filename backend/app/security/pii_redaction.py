@@ -1,4 +1,4 @@
-"""PII Redaction utilities for protecting sensitive data in storage and logs."""
+﻿"""PII Redaction utilities for protecting sensitive data in storage and logs."""
 
 import re
 from dataclasses import dataclass
@@ -9,7 +9,6 @@ from app.core.logging import get_logger
 logger = get_logger(__name__)
 
 
-# PII detection patterns - production hardened
 PII_PATTERNS = {
     "email": re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b"),
     "phone_us": re.compile(r"\b(?:\+?1[-.\s]?)?\(?([0-9]{3})\)?[-.\s]?([0-9]{3})[-.\s]?([0-9]{4})\b"),
@@ -50,8 +49,7 @@ class PIIRedactor:
         self.patterns = PII_PATTERNS.copy()
         if custom_patterns:
             self.patterns.update(custom_patterns)
-        
-        # Compile redaction replacement
+
         self.replacement = "[REDACTED]"
 
     def detect(self, text: str) -> list[PIIMatch]:
@@ -65,7 +63,6 @@ class PIIRedactor:
                     start=match.start(),
                     end=match.end(),
                 ))
-        # Sort by position
         matches.sort(key=lambda m: m.start)
         return matches
 
@@ -83,7 +80,6 @@ class PIIRedactor:
                 redaction_count=0,
             )
 
-        # Deduplicate and handle overlaps - keep highest confidence and earliest
         deduped: list[PIIMatch] = []
         seen = set()
         for m in matches:
@@ -91,7 +87,6 @@ class PIIRedactor:
             if key not in seen:
                 seen.add(key)
                 deduped.append(m)
-        # Sort and merge overlapping - keep first, skip overlapping
         deduped.sort(key=lambda m: (m.start, -m.end))
         filtered: list[PIIMatch] = []
         last_end = -1
@@ -99,9 +94,7 @@ class PIIRedactor:
             if m.start >= last_end:
                 filtered.append(m)
                 last_end = m.end
-            # overlapping matches skipped to avoid corruption
 
-        # Build redacted text with typed replacement
         redacted_parts = []
         last_end = 0
         for match in filtered:
@@ -123,9 +116,8 @@ class PIIRedactor:
     def redact_dict(self, data: dict[str, Any], fields_to_redact: list[str] | None = None) -> dict[str, Any]:
         """Redact PII from specific fields in a dictionary."""
         result = data.copy()
-        
+
         if fields_to_redact is None:
-            # Redact all string values
             for key, value in result.items():
                 if isinstance(value, str):
                     result[key] = self.redact(value).redacted_text
@@ -133,21 +125,19 @@ class PIIRedactor:
                     result[key] = self.redact_dict(value)
                 elif isinstance(value, list):
                     result[key] = [
-                        self.redact_dict(item) if isinstance(item, dict) 
+                        self.redact_dict(item) if isinstance(item, dict)
                         else self.redact(item).redacted_text if isinstance(item, str)
                         else item
                         for item in value
                     ]
         else:
-            # Redact only specified fields
             for field in fields_to_redact:
                 if field in result and isinstance(result[field], str):
                     result[field] = self.redact(result[field]).redacted_text
-        
+
         return result
 
 
-# Default redactor instance
 default_redactor = PIIRedactor()
 
 
@@ -161,10 +151,9 @@ def redact_log_data(data: dict[str, Any]) -> dict[str, Any]:
     return default_redactor.redact_dict(data)
 
 
-# Fields that commonly contain PII and should be redacted before storage
 SENSITIVE_FIELDS = {
-    "email", "phone", "phone_number", "ssn", "social_security", 
-    "credit_card", "card_number", "api_key", "api_secret", 
+    "email", "phone", "phone_number", "ssn", "social_security",
+    "credit_card", "card_number", "api_key", "api_secret",
     "password", "token", "access_token", "refresh_token",
     "private_key", "private_key_pem", "authorization", "cookie",
     "address", "street_address", "zip_code", "postal_code",
@@ -180,15 +169,12 @@ def redact_for_storage(data: dict[str, Any]) -> dict[str, Any]:
 
 def redact_execution_data(execution_data: dict[str, Any]) -> dict[str, Any]:
     """Redact PII from execution request/response data."""
-    # Redact request
     if "target_request" in execution_data:
         execution_data["target_request"] = redact_for_storage(execution_data["target_request"])
-    
-    # Redact response
+
     if "target_response" in execution_data:
         execution_data["target_response"] = redact_for_storage(execution_data["target_response"])
-    
-    # Redact tool calls
+
     if "tool_calls" in execution_data:
         tool_calls = execution_data["tool_calls"]
         for tc in tool_calls:
@@ -196,5 +182,5 @@ def redact_execution_data(execution_data: dict[str, Any]) -> dict[str, Any]:
                 tc["arguments"] = redact_for_storage(tc["arguments"])
             if "result" in tc and isinstance(tc["result"], str):
                 tc["result"] = redact_text(tc["result"])
-    
+
     return execution_data

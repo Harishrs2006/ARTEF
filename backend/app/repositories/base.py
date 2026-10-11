@@ -34,13 +34,15 @@ class BaseRepository(Generic[ModelType]):
         limit: int = 100,
         filters: dict | None = None,
         order_by: str | None = None,
+        descending: bool = False,
     ) -> list[ModelType]:
         query = select(self.model)
         if filters:
             for field, value in filters.items():
                 query = query.where(getattr(self.model, field) == value)
         if order_by:
-            query = query.order_by(getattr(self.model, order_by))
+            column = getattr(self.model, order_by)
+            query = query.order_by(column.desc() if descending else column.asc())
         query = query.offset(skip).limit(limit)
         result = await self.session.execute(query)
         return list(result.scalars().all())

@@ -1,4 +1,9 @@
-name: Security Scan - LLM & Promptfoo Features
+name: Security Scan
+
+# Real scanners. Dependency and static-analysis findings are REPORTED (uploaded as
+# artifacts, job stays green) because the inherited codebase has not been triaged yet;
+# switch `continue-on-error` off once the baseline findings are resolved.
+# The model-scanner tests are a hard gate.
 
 on:
   push:
@@ -9,58 +14,70 @@ on:
     - cron: "0 2 * * 1"
 
 jobs:
-  llm-code-scan:
-    name: LLM Vulnerability Scan
+  python-dependencies:
+    name: Python dependency audit (pip-audit, report only)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - name: Run LLM vulnerability scan
-        run: |
-          echo "Running LLM vulnerability scan and prompt injection checks..."
-          echo "Summary: {'critical': 0, 'high': 0, 'medium': 0, 'low': 0}"
-          echo "LLM Security Scan completed successfully with 0 vulnerabilities."
+      - run: pip install pip-audit
+      - name: Audit locked dependencies
+        continue-on-error: true
+        run: pip-audit -r requirements.lock --format json --output pip-audit.json --progress-spinner off
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pip-audit
+          path: pip-audit.json
 
-  guardrails-check:
-    name: Guardrails Policy Check
+  python-static-analysis:
+    name: Backend static security analysis (bandit, report only)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - name: Check guardrails config
-        run: |
-          echo "Checking guardrails policy definitions..."
-          echo "Guardrails: ['jailbreak', 'prompt_injection', 'pii', 'toxic_content', 'hallucination']"
-          echo "Guardrails Policy Check passed successfully."
+      - run: pip install bandit
+      - name: Bandit (medium severity and above)
+        continue-on-error: true
+        run: bandit -r backend/app -ll -f json -o bandit.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bandit
+          path: bandit.json
 
-  model-security:
-    name: Model Security Scan
+  frontend-dependencies:
+    name: Frontend dependency audit (pnpm audit, report only)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: corepack enable && corepack prepare pnpm@10.18.0 --activate
+      - name: Audit (high and critical)
+        continue-on-error: true
+        run: pnpm audit --audit-level high
+
+  model-scanner:
+    name: Model security scanner tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - name: Run model security dashboard check
-        run: |
-          echo "Running model security metrics check..."
-          echo "Model security score: 98/100 (Clean)"
-          echo "Model Security Scan passed successfully."
-
-  mcp-proxy-check:
-    name: MCP Proxy Health
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Verify MCP proxy
-        run: |
-          echo "Verifying MCP proxy endpoints and tool filtering..."
-          echo "MCP proxy health: UP (All tools passing safety gate)"
-          echo "MCP Proxy Health check passed successfully."
+          cache: pip
+          cache-dependency-path: requirements-dev.lock
+      - run: |
+          pip install -r requirements-dev.lock
+          pip install -e . --no-deps
+      - name: Pickle scanner detects code-executing payloads without loading them
+        run: pytest backend/tests/unit/test_pickle_scanner.py -v -p no:cacheprovider

@@ -205,6 +205,21 @@ async def approve_baseline(
     return {"message": "Baseline approved"}
 
 
+@router.delete("/{baseline_id}")
+async def delete_baseline(
+    baseline_id: UUID,
+    baseline_repo: BaselineRepository = Depends(get_baseline_repo),
+    current_user: TokenData = Depends(require_role(["admin"])),
+):
+    """Baselines are never hard-deleted: their regressions and review items (the evidence
+    trail) cascade from them. Deactivate instead."""
+    if not await baseline_repo.get(baseline_id):
+        raise NotFoundError("Baseline", str(baseline_id))
+    raise ConflictError(
+        "Baselines are kept for the audit trail and cannot be deleted. Deactivate it instead."
+    )
+
+
 @router.post("/{baseline_id}/deactivate")
 async def deactivate_baseline(
     baseline_id: UUID,

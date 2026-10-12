@@ -6,7 +6,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
-import { api } from "@/lib/api";
+import { api, handleApiError } from "@/lib/api";
 import { formatDate, formatDuration, formatCost, getSeverityColor } from "@/lib/utils";
 import { useAuth } from "@/lib/auth";
 import { useParams } from "next/navigation";
@@ -87,6 +87,30 @@ export default function RunDetailPage() {
   const [regressions, setRegressions] = useState<RegressionDetail[]>([]);
   const [loaded, setLoaded] = useState(false);
 
+  const [approving, setApproving] = useState(false);
+
+  // A finished run with a definite verdict for every test can become the suite's baseline
+  // (the API enforces the same rule and replaces the previous baseline).
+  const approveAsBaseline = async () => {
+    if (!run) return;
+    if (!confirm("Approve this run as the known-good baseline for its suite? Later runs will be compared against it.")) return;
+    setApproving(true);
+    try {
+      await api.post("/baselines/", {
+        suite_id: run.suite_id,
+        suite_version: run.suite_version,
+        run_id: run.id,
+        name: `Baseline from run ${run.id.slice(0, 8)}`,
+      });
+      alert("Baseline approved. New runs of this suite are now compared against it.");
+      fetchData();
+    } catch (error) {
+      alert(`Could not approve baseline: ${handleApiError(error)}`);
+    } finally {
+      setApproving(false);
+    }
+  };
+
   const fetchData = useCallback(async () => {
     try {
       const [runRes, resultsRes, regsRes] = await Promise.all([
@@ -152,7 +176,12 @@ export default function RunDetailPage() {
               <p className="text-muted-foreground">{run.id}</p>
             </div>
           </div>
-          <div className="flex gap-2">
+          <div className="flex items-center gap-2">
+            {["completed", "review_required"].includes(run.status) && run.inconclusive_count === 0 && (
+              <Button variant="outline" size="sm" onClick={approveAsBaseline} disabled={approving}>
+                {approving ? "Approving..." : "Approve as baseline"}
+              </Button>
+            )}
             <Badge variant={
               run.status === "completed" ? "default" :
               run.status === "failed" ? "destructive" :

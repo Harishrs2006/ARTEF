@@ -39,6 +39,47 @@ jobs:
           PYTHONIOENCODING: utf-8
         run: pytest backend/tests -q -p no:cacheprovider
 
+  migrations:
+    name: Database migrations match the models (PostgreSQL)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: artef
+        ports:
+          - 5432:5432
+        options: --health-cmd="pg_isready -U postgres" --health-interval=5s --health-timeout=5s --health-retries=10
+    env:
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/artef
+      SECRET_KEY: ci-only-secret-key-0123456789abcdefghijkl
+      REDIS_URL: redis://localhost:6379/0
+      CELERY_BROKER_URL: memory://
+      CELERY_RESULT_BACKEND: cache+memory://
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements-dev.lock
+      - name: Install dependencies (pinned)
+        working-directory: .
+        run: |
+          pip install -r requirements-dev.lock
+          pip install -e . --no-deps
+      - name: Upgrade an empty database to head
+        run: alembic upgrade head
+      - name: No drift between models and migrations
+        run: alembic check
+      - name: Downgrade and upgrade again
+        run: alembic downgrade base && alembic upgrade head
+
   frontend:
     name: Frontend - typecheck, tests, build
     runs-on: ubuntu-latest

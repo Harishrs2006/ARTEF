@@ -372,8 +372,37 @@ docker compose exec backend python ../scripts/seed_demo_data.py
 | ChromaDB | `http://localhost:8001` |
 | Demo agents | `http://demo-agent-safe:9001/chat`, `http://demo-agent-vulnerable:9002/chat` (inside the Docker network) |
 
+If a local PostgreSQL already uses port 5432, start with `POSTGRES_HOST_PORT=5433 docker compose up -d --build`.
+MinIO (object storage) is optional and not started by default; the `minio/minio` image is no
+longer published on Docker Hub (see the `storage` profile in `docker-compose.yml`).
+
 `docker-compose.prod.yml` builds the production images; it expects a root `.env` with
 `POSTGRES_*`, `MINIO_ROOT_*`, `SECRET_KEY` and JWT keys in `./secrets/`.
+
+### Database schema and migrations
+
+The API creates any missing tables from the models at startup, which is enough for
+development. For a managed PostgreSQL database use Alembic instead (from `backend/`):
+
+```bash
+alembic upgrade head      # create / update the schema
+alembic check             # fails if the models and migrations have drifted (also run in CI)
+```
+
+If the database was already created by the API at startup, record it as current with
+`alembic stamp head` (the baseline migration matches the models exactly). Migrations target
+PostgreSQL; the SQLite development database relies on startup table creation.
+
+### Troubleshooting (Windows): Docker Desktop never starts
+
+If Docker Desktop stays at "starting" and its log (`%LOCALAPPDATA%\Docker\log\host\com.docker.backend.exe.log`)
+says *"remove ...dockerInference: The file cannot be accessed by the system"*, stale Unix-socket
+files are blocking it and Windows cannot delete them. Quit Docker Desktop, delete them from WSL,
+then start Docker again:
+
+```bash
+wsl -d Ubuntu -- rm -f /mnt/c/Users/<you>/AppData/Local/Docker/run/dockerInference /mnt/c/Users/<you>/AppData/Local/Docker/run/userAnalyticsOtlpHttp.sock /mnt/c/Users/<you>/AppData/Local/docker-secrets-engine/engine.sock
+```
 
 ---
 
@@ -457,7 +486,7 @@ ARTEF/
 │   │   ├── repositories/    # data access
 │   │   ├── services/        # pipeline_service (execute → score → diff → gate → review)
 │   │   └── workers/         # Celery app and tasks
-│   ├── alembic/             # migrations
+│   ├── alembic/             # migrations (versions/ = current; legacy_versions/ = old, unused)
 │   └── tests/               # unit/ and integration/ (pytest)
 ├── demo/target_agent.py     # demo AI agent under test (safe / vulnerable)
 ├── frontend/                # Next.js 14 app (src/app routes, src/components, src/lib)

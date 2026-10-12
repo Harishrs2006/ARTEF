@@ -10,23 +10,31 @@ settings = get_settings()
 _is_sqlite = settings.DATABASE_URL.startswith("sqlite")
 
 
+def _json_default(obj):
+    # JSON columns (evidence, snapshots) contain datetimes; serialise them as ISO strings.
+    from datetime import date, datetime
+
+    if isinstance(obj, (datetime, date)):
+        return obj.isoformat()
+    raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
+
+
+def _json_serializer(value) -> str:
+    import json
+
+    return json.dumps(value, default=_json_default)
+
+
 def _engine_options(pooled: bool) -> dict:
     """Engine options for this database. pooled=False gives a NullPool engine for code that
     runs in its own event loop (Celery tasks), where pooled connections must not be shared."""
     from sqlalchemy.pool import NullPool, StaticPool
 
     if _is_sqlite:
-        import json
         import sqlite3
         import uuid
-        from datetime import date, datetime
 
         sqlite3.register_adapter(uuid.UUID, lambda u: str(u))
-
-        def _sqlite_json_serializer(obj):
-            if isinstance(obj, (datetime, date)):
-                return obj.isoformat()
-            raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
 
         in_memory = ":memory:" in settings.DATABASE_URL
         return {
@@ -35,11 +43,12 @@ def _engine_options(pooled: bool) -> dict:
             # An in-memory database exists only on one connection; a file can use one per session.
             "poolclass": StaticPool if in_memory else NullPool,
             "echo": settings.DEBUG,
-            "json_serializer": lambda o: json.dumps(o, default=_sqlite_json_serializer),
+            "json_serializer": _json_serializer,
         }
     if not pooled:
-        return {"poolclass": NullPool, "echo": settings.DEBUG}
+        return {"poolclass": NullPool, "echo": settings.DEBUG, "json_serializer": _json_serializer}
     return {
+        "json_serializer": _json_serializer,
         "pool_size": settings.DATABASE_POOL_SIZE,
         "max_overflow": settings.DATABASE_MAX_OVERFLOW,
         "pool_timeout": settings.DATABASE_POOL_TIMEOUT,

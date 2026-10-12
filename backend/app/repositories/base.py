@@ -14,12 +14,7 @@ class BaseRepository(Generic[ModelType]):
         self.session = session
 
     async def get(self, id: UUID | str) -> ModelType | None:
-        id_str = str(id)
-        result = await self.session.execute(
-            select(self.model).where(
-                (self.model.id == id) | (self.model.id == id_str)
-            )
-        )
+        result = await self.session.execute(select(self.model).where(self.model.id == id))
         return result.scalar_one_or_none()
 
     async def get_by_field(self, field: str, value: Any) -> ModelType | None:
@@ -31,7 +26,7 @@ class BaseRepository(Generic[ModelType]):
     async def list(
         self,
         skip: int = 0,
-        limit: int = 100,
+        limit: int | None = 100,
         filters: dict | None = None,
         order_by: str | None = None,
         descending: bool = False,
@@ -43,7 +38,9 @@ class BaseRepository(Generic[ModelType]):
         if order_by:
             column = getattr(self.model, order_by)
             query = query.order_by(column.desc() if descending else column.asc())
-        query = query.offset(skip).limit(limit)
+        query = query.offset(skip)
+        if limit is not None:  # None = all rows (internal pipeline use)
+            query = query.limit(limit)
         result = await self.session.execute(query)
         return list(result.scalars().all())
 
@@ -80,10 +77,7 @@ class BaseRepository(Generic[ModelType]):
         return True
 
     async def exists(self, id: UUID | str) -> bool:
-        id_str = str(id)
         result = await self.session.execute(
-            select(func.count()).select_from(self.model).where(
-                (self.model.id == id) | (self.model.id == id_str)
-            )
+            select(func.count()).select_from(self.model).where(self.model.id == id)
         )
         return result.scalar_one() > 0

@@ -54,8 +54,11 @@ async def readiness_check(db: AsyncSession = Depends(get_db)):
     except Exception:
         pass
 
-    all_ready = all(checks.values())
-    return {"ready": all_ready, "checks": checks}
+    # Evaluations need the database and the task queue; vector store and object storage
+    # are optional (not used by the evaluation pipeline) and only reported.
+    required = ("database", "redis")
+    all_ready = all(checks[name] for name in required)
+    return {"ready": all_ready, "required": list(required), "checks": checks}
 
 
 @router.get("/metrics")

@@ -17,6 +17,7 @@ from sqlalchemy import (
 from sqlalchemy import Enum as SQLEnum
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
+from app.models.types import UUIDString
 from app.models.user import Base
 
 if TYPE_CHECKING:
@@ -32,7 +33,7 @@ class DatasetStatus(str, Enum):
 class Dataset(Base):
     __tablename__ = "datasets"
 
-    id: Mapped[String] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    id: Mapped[String] = mapped_column(UUIDString(), primary_key=True, default=lambda: str(uuid4()))
     name: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[DatasetStatus] = mapped_column(
@@ -62,7 +63,7 @@ class Dataset(Base):
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
     )
     created_by: Mapped[String | None] = mapped_column(
-        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+        UUIDString(), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
 
     versions: Mapped[list["DatasetVersion"]] = relationship(
@@ -79,9 +80,9 @@ class Dataset(Base):
 class DatasetVersion(Base):
     __tablename__ = "dataset_versions"
 
-    id: Mapped[String] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    id: Mapped[String] = mapped_column(UUIDString(), primary_key=True, default=lambda: str(uuid4()))
     dataset_id: Mapped[String] = mapped_column(
-        String(36),
+        UUIDString(),
         ForeignKey("datasets.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
@@ -100,7 +101,7 @@ class DatasetVersion(Base):
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
     created_by: Mapped[String | None] = mapped_column(
-        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+        UUIDString(), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
 
     dataset: Mapped["Dataset"] = relationship(back_populates="versions", lazy="joined")
@@ -114,9 +115,9 @@ class DatasetVersion(Base):
 class DatasetSplit(Base):
     __tablename__ = "dataset_splits"
 
-    id: Mapped[String] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    id: Mapped[String] = mapped_column(UUIDString(), primary_key=True, default=lambda: str(uuid4()))
     dataset_version_id: Mapped[String] = mapped_column(
-        String(36),
+        UUIDString(),
         ForeignKey("dataset_versions.id", ondelete="CASCADE"),
         nullable=False,
         index=True,

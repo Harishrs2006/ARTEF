@@ -176,7 +176,7 @@ def redact_execution_data(execution_data: dict[str, Any]) -> dict[str, Any]:
         execution_data["target_response"] = redact_for_storage(execution_data["target_response"])
 
     if "tool_calls" in execution_data:
-        tool_calls = execution_data["tool_calls"]
+        tool_calls = execution_data["tool_calls"] or []  # None when the agent made no tool calls
         for tc in tool_calls:
             if "arguments" in tc:
                 tc["arguments"] = redact_for_storage(tc["arguments"])

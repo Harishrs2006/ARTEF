@@ -34,7 +34,7 @@ class ExecutionRepository(BaseRepository[Execution]):
     def __init__(self, session: AsyncSession):
         super().__init__(Execution, session)
 
-    async def list_by_run(self, run_id: UUID, skip: int = 0, limit: int = 100) -> list[Execution]:
+    async def list_by_run(self, run_id: UUID, skip: int = 0, limit: int | None = None) -> list[Execution]:
         return await self.list(skip=skip, limit=limit, filters={"run_id": run_id})
 
     async def get_by_run_and_test_case(self, run_id: UUID, test_case_id: UUID) -> Execution | None:
@@ -53,7 +53,7 @@ class ResultRepository(BaseRepository[Result]):
     def __init__(self, session: AsyncSession):
         super().__init__(Result, session)
 
-    async def list_by_run(self, run_id: UUID, skip: int = 0, limit: int = 100) -> list[Result]:
+    async def list_by_run(self, run_id: UUID, skip: int = 0, limit: int | None = None) -> list[Result]:
         return await self.list(skip=skip, limit=limit, filters={"run_id": run_id})
 
     async def list_by_run_and_verdict(self, run_id: UUID, verdict: Verdict) -> list[Result]:

@@ -7,86 +7,130 @@ on:
     branches: [main, develop]
 
 jobs:
-  lint-and-typecheck:
-    name: Lint & Type Check
+  backend:
+    name: Backend - static checks and tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      
-      - name: Lint and Type Check (Backend)
-        run: |
-          echo "Running backend static code analysis..."
-          python -m compileall backend || true
-          echo "Backend code quality checks passed."
-      
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-      
-      - name: Lint and Type Check (Frontend)
-        run: |
-          echo "Running frontend type validation..."
-          echo "Frontend static checks passed."
+          cache: pip
+          cache-dependency-path: requirements-dev.lock
 
-  backend-tests:
-    name: Backend Tests
+      - name: Install dependencies (pinned)
+        run: |
+          pip install -r requirements-dev.lock
+          pip install -e . --no-deps
+
+      - name: Static check for crash-level bugs (syntax errors, undefined names)
+        # Models use string annotations resolved by SQLAlchemy at runtime (false F821s).
+        run: >
+          ruff check backend/app scripts demo apps --isolated
+          --select E9,F63,F7,F821,F822,F823
+          --per-file-ignores "backend/app/models/*:F821"
+
+      - name: Unit and integration tests
+        # Includes tests/integration: real API + SQLite + eager Celery + HTTP demo agents.
+        # Test settings come from backend/tests/conftest.py (no secrets needed).
+        env:
+          PYTHONIOENCODING: utf-8
+        run: pytest backend/tests -q -p no:cacheprovider
+
+  migrations:
+    name: Database migrations match the models (PostgreSQL)
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: artef
+        ports:
+          - 5432:5432
+        options: --health-cmd="pg_isready -U postgres" --health-interval=5s --health-timeout=5s --health-retries=10
+    env:
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/artef
+      SECRET_KEY: ci-only-secret-key-0123456789abcdefghijkl
+      REDIS_URL: redis://localhost:6379/0
+      CELERY_BROKER_URL: memory://
+      CELERY_RESULT_BACKEND: cache+memory://
+    defaults:
+      run:
+        working-directory: backend
     steps:
       - uses: actions/checkout@v4
-      
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      
-      - name: Run Backend Test Suites
+          cache: pip
+          cache-dependency-path: requirements-dev.lock
+      - name: Install dependencies (pinned)
+        working-directory: .
         run: |
-          echo "Running unit, integration, and security tests..."
-          python -m unittest discover -s backend -p "test*.py" 2>/dev/null || true
-          echo "All backend test suites passed."
+          pip install -r requirements-dev.lock
+          pip install -e . --no-deps
+      - name: Upgrade an empty database to head
+        run: alembic upgrade head
+      - name: No drift between models and migrations
+        run: alembic check
+      - name: Downgrade and upgrade again
+        run: alembic downgrade base && alembic upgrade head
 
-  frontend-tests:
-    name: Frontend Tests
+  frontend:
+    name: Frontend - typecheck, tests, build
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
     steps:
       - uses: actions/checkout@v4
-      
+
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
           node-version: "20"
-      
-      - name: Run Frontend Tests
-        run: |
-          echo "Running frontend component and unit tests..."
-          echo "All frontend tests passed successfully."
 
-  security-scan:
-    name: Security Scan
+      - name: Install pnpm
+        run: corepack enable && corepack prepare pnpm@10.18.0 --activate
+
+      - name: Install dependencies (lockfile)
+        run: pnpm install --frozen-lockfile
+
+      - name: Type check
+        run: pnpm typecheck
+
+      - name: Unit tests
+        run: pnpm test
+
+      - name: Lint (next build skips it, see next.config.mjs)
+        run: pnpm lint
+
+      - name: Production build
+        run: pnpm build
+
+  docker-build:
+    name: Build container images
     runs-on: ubuntu-latest
+    needs: [backend, frontend]
     steps:
       - uses: actions/checkout@v4
-      
-      - name: Run Security Scanners
-        run: |
-          echo "Running security vulnerability scan..."
-          echo "Security scan completed with 0 critical issues."
 
-  build-containers:
-    name: Build Containers
-    runs-on: ubuntu-latest
-    needs: [lint-and-typecheck, backend-tests, frontend-tests]
-    steps:
-      - uses: actions/checkout@v4
-      
-      - name: Verify Container Specifications
-        run: |
-          echo "Verifying Dockerfile and container specifications..."
-          docker --version
-          echo "All container specifications verified."
+      - name: Build backend image
+        run: docker build -f backend/Dockerfile --target production -t artef-backend:ci .
+
+      - name: Build frontend image
+        run: docker build -f frontend/Dockerfile -t artef-frontend:ci frontend
+
+      - name: Backend image imports the app
+        run: >
+          docker run --rm
+          -e SECRET_KEY=ci-only-secret-key-0123456789abcdefghijkl
+          -e DATABASE_URL=sqlite+aiosqlite:///./ci.db
+          -e REDIS_URL=redis://localhost:6379/0
+          -e CELERY_BROKER_URL=memory://
+          -e CELERY_RESULT_BACKEND=cache+memory://
+          artef-backend:ci python -c "import app.main, app.workers.celery_app; print('ok')"

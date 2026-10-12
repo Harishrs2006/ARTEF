@@ -12,15 +12,16 @@ from sqlalchemy import (
     String,
 )
 
+from app.models.types import UUIDString
 from app.models.user import Base
 
 
 class CostEntryModel(Base):
     __tablename__ = "cost_entries"
 
-    id = Column(String(36), primary_key=True, default=lambda: str(uuid4()))
-    run_id = Column(String(36), ForeignKey("runs.id"), nullable=True, index=True)
-    test_case_id = Column(String(36), ForeignKey("test_cases.id"), nullable=True, index=True)
+    id = Column(UUIDString(), primary_key=True, default=lambda: str(uuid4()))
+    run_id = Column(UUIDString(), ForeignKey("runs.id"), nullable=True, index=True)
+    test_case_id = Column(UUIDString(), ForeignKey("test_cases.id"), nullable=True, index=True)
     category = Column(String(50), nullable=False, index=True)
     provider = Column(String(100), nullable=False, index=True)
     model = Column(String(100), nullable=False, index=True)
@@ -42,7 +43,7 @@ class CostEntryModel(Base):
 class CostSummaryModel(Base):
     __tablename__ = "cost_summaries"
 
-    id = Column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    id = Column(UUIDString(), primary_key=True, default=lambda: str(uuid4()))
     period_start = Column(DateTime(timezone=True), nullable=False, index=True)
     period_end = Column(DateTime(timezone=True), nullable=False, index=True)
     total_cost_usd = Column(Float, default=0.0)
@@ -63,12 +64,12 @@ class CostSummaryModel(Base):
 class CostTrendModel(Base):
     __tablename__ = "cost_trends"
 
-    id = Column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    id = Column(UUIDString(), primary_key=True, default=lambda: str(uuid4()))
     date = Column(DateTime(timezone=True), nullable=False, index=True)
     cost_usd = Column(Float, default=0.0)
     token_count = Column(Integer, default=0)
     request_count = Column(Integer, default=0)
-    run_id = Column(String(36), ForeignKey("runs.id"), nullable=True, index=True)
+    run_id = Column(UUIDString(), ForeignKey("runs.id"), nullable=True, index=True)
     provider = Column(String(100), nullable=True, index=True)
     model = Column(String(100), nullable=True, index=True)
     category = Column(String(50), nullable=True, index=True)

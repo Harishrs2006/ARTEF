@@ -20,6 +20,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.domain.enums import ExpectedBehaviorType, TestCaseCategory, TestCaseSeverity
+from app.models.types import UUIDString
 from app.models.user import Base
 
 if TYPE_CHECKING:
@@ -32,7 +33,7 @@ if TYPE_CHECKING:
 class TestSuite(Base):
     __tablename__ = "test_suites"
 
-    id: Mapped[String] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    id: Mapped[String] = mapped_column(UUIDString(), primary_key=True, default=lambda: str(uuid4()))
     name: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
@@ -45,10 +46,10 @@ class TestSuite(Base):
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
     )
     created_by: Mapped[String | None] = mapped_column(
-        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+        UUIDString(), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
     dataset_id: Mapped[String | None] = mapped_column(
-        String(36), ForeignKey("datasets.id", ondelete="SET NULL"), nullable=True, index=True
+        UUIDString(), ForeignKey("datasets.id", ondelete="SET NULL"), nullable=True, index=True
     )
 
     test_cases: Mapped[list["TestCase"]] = relationship(
@@ -71,9 +72,9 @@ class TestSuite(Base):
 class TestSuiteVersion(Base):
     __tablename__ = "test_suite_versions"
 
-    id: Mapped[String] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    id: Mapped[String] = mapped_column(UUIDString(), primary_key=True, default=lambda: str(uuid4()))
     suite_id: Mapped[String] = mapped_column(
-        String(36),
+        UUIDString(),
         ForeignKey("test_suites.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
@@ -85,7 +86,7 @@ class TestSuiteVersion(Base):
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
     created_by: Mapped[String | None] = mapped_column(
-        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+        UUIDString(), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
 
     suite: Mapped["TestSuite"] = relationship(back_populates="versions", lazy="joined")
@@ -96,9 +97,9 @@ class TestSuiteVersion(Base):
 class TestCase(Base):
     __tablename__ = "test_cases"
 
-    id: Mapped[String] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    id: Mapped[String] = mapped_column(UUIDString(), primary_key=True, default=lambda: str(uuid4()))
     suite_id: Mapped[String] = mapped_column(
-        String(36),
+        UUIDString(),
         ForeignKey("test_suites.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
@@ -132,7 +133,7 @@ class TestCase(Base):
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
     )
     created_by: Mapped[String | None] = mapped_column(
-        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+        UUIDString(), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
 
     suite: Mapped["TestSuite"] = relationship(back_populates="test_cases", lazy="joined")
@@ -145,6 +146,16 @@ class TestCase(Base):
         back_populates="test_case", lazy="dynamic"
     )
 
+    @property
+    def expected_behavior(self) -> dict[str, Any]:
+        """The expected behavior in the same shape suites are submitted in."""
+        behavior: dict[str, Any] = {"type": self.expected_behavior_type.value}
+        if self.matcher_config:
+            behavior["matcher"] = self.matcher_config
+        if self.rubric_config:
+            behavior["rubric"] = self.rubric_config
+        return behavior
+
     __table_args__ = (
         UniqueConstraint(
             "suite_id", "test_case_id", "version", name="uq_test_case_suite_id_version"
@@ -156,9 +167,9 @@ class TestCase(Base):
 class TestCaseVersion(Base):
     __tablename__ = "test_case_versions"
 
-    id: Mapped[String] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    id: Mapped[String] = mapped_column(UUIDString(), primary_key=True, default=lambda: str(uuid4()))
     test_case_id: Mapped[String] = mapped_column(
-        String(36),
+        UUIDString(),
         ForeignKey("test_cases.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
@@ -170,7 +181,7 @@ class TestCaseVersion(Base):
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
     created_by: Mapped[String | None] = mapped_column(
-        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+        UUIDString(), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
 
     test_case: Mapped["TestCase"] = relationship(back_populates="versions", lazy="joined")

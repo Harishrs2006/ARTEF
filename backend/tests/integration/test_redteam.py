@@ -47,6 +47,15 @@ def test_vulnerable_agent_is_broken_and_session_stops(client: TestClient, login,
     history = client.get("/api/v1/redteam/history", headers=headers).json()
     assert any(s["id"] == body["id"] for s in history)
 
+    # Sessions are stored in the database, so they survive an application restart.
+    from app.main import app
+
+    with TestClient(app) as restarted:
+        after = restarted.get("/api/v1/redteam/history", headers=headers).json()
+    saved = next(s for s in after if s["id"] == body["id"])
+    assert saved["final_verdict"] == "FAIL"
+    assert saved["turns"][0]["response"] == body["turns"][0]["response"]
+
 
 def test_unreachable_agent_is_inconclusive(client: TestClient, login, target_urls):
     headers = login("admin")

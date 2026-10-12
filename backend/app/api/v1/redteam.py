@@ -5,13 +5,16 @@ from uuid import UUID, uuid4
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
-from app.api.deps import TokenData, get_agent_repo, require_role
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.api.deps import TokenData, get_agent_repo, get_db, require_role
 from app.core.logging import get_logger
 from app.domain.enums import SeverityLevel, TestCaseCategory, Verdict
 from app.providers.target_agent import validate_target_url
 from app.redteam.agent import AttackStrategy, RedTeamAgent
 from app.redteam.generator import STATIC_ATTACK_LIBRARY
-from app.redteam.session import RedTeamSession, RedTeamTurn, session_manager
+from app.models.redteam_session import RedTeamSessionRecord
 from app.repositories.agents import TargetAgentRepository
 
 router = APIRouter()
@@ -124,6 +127,7 @@ async def generate_attacks(
 async def run_redteam_attack(
     req: RunAttackRequest,
     agent_repo: TargetAgentRepository = Depends(get_agent_repo),
+    db: AsyncSession = Depends(get_db),
     current_user: TokenData = Depends(
         require_role(["admin", "safety_engineer", "ml_engineer"])
     ),
@@ -145,11 +149,6 @@ async def run_redteam_attack(
         raise HTTPException(status_code=400, detail=f"Target URL not allowed: {e}") from e
 
     category = (cat_enum or TestCaseCategory.JAILBREAK).value
-    session = session_manager.create_session(
-        target_agent_id=req.agent_id,
-        strategy={"category": category, "max_turns": req.max_turns},
-        max_turns=req.max_turns,
-    )
 
     # Real multi-turn attack against the agent's endpoint (LangGraph state machine in
     # app/redteam/agent.py). Turns are capped by REDTEAM_MAX_TURNS.
@@ -160,85 +159,76 @@ async def run_redteam_attack(
     result = await redteam_agent.run(
         AttackStrategy(objective="", category=category, initial_prompt="", max_turns=req.max_turns)
     )
-
-    session.strategy = {
-        "objective": result.strategy.objective,
-        "category": category,
-        "max_turns": result.strategy.max_turns,
-    }
-    for turn in result.turns:
-        session_manager.add_turn(
-            session.id,
-            RedTeamTurn(
-                turn_number=turn.turn_number,
-                prompt=turn.prompt,
-                response=turn.response,
-                tool_calls=[tc.model_dump() for tc in turn.tool_calls],
-                judge_verdict=turn.judge_verdict,
-                judge_rationale=turn.judge_rationale,
-            ),
-        )
     final_verdict = result.final_verdict or Verdict.INCONCLUSIVE
-    session_manager.complete_session(
-        session.id, verdict=final_verdict, objective_achieved=result.objective_achieved
+
+    record = RedTeamSessionRecord(
+        target_agent_id=req.agent_id,
+        category=category,
+        strategy={
+            "objective": result.strategy.objective,
+            "category": category,
+            "max_turns": result.strategy.max_turns,
+        },
+        turns=[
+            {
+                "turn_number": t.turn_number,
+                "prompt": t.prompt,
+                "response": t.response,
+                "tool_calls": [tc.model_dump() for tc in t.tool_calls],
+                "judge_verdict": t.judge_verdict.value if t.judge_verdict else None,
+                "judge_rationale": t.judge_rationale,
+            }
+            for t in result.turns
+        ],
+        final_verdict=final_verdict.value,
+        objective_achieved=result.objective_achieved,
+        error=result.error,
+        created_by=current_user.sub,
+        completed_at=datetime.now(timezone.utc),
     )
-    if result.error:
-        session.error = result.error
+    db.add(record)
+    await db.flush()
+    await db.refresh(record)
     logger.info(
         "redteam_session_completed",
-        session_id=str(session.id),
+        session_id=str(record.id),
         category=category,
         turns=len(result.turns),
         verdict=final_verdict.value,
     )
+    return _session_response(record)
 
+
+def _session_response(record: RedTeamSessionRecord) -> RedTeamSessionResponse:
     return RedTeamSessionResponse(
-        id=str(session.id),
-        target_agent_id=str(session.target_agent_id),
-        status="completed",
-        strategy=session.strategy,
+        id=str(record.id),
+        target_agent_id=str(record.target_agent_id) if record.target_agent_id else "",
+        status="error" if record.error and not record.turns else "completed",
+        strategy=record.strategy or {},
         turns=[
             TurnResponse(
-                turn_number=t.turn_number,
-                prompt=t.prompt,
-                response=t.response,
-                judge_verdict=t.judge_verdict.value if t.judge_verdict else None,
-                judge_rationale=t.judge_rationale,
+                turn_number=t["turn_number"],
+                prompt=t["prompt"],
+                response=t["response"],
+                judge_verdict=t.get("judge_verdict"),
+                judge_rationale=t.get("judge_rationale"),
             )
-            for t in session.turns
+            for t in (record.turns or [])
         ],
-        final_verdict=final_verdict.value,
-        created_at=session.created_at.isoformat(),
+        final_verdict=record.final_verdict,
+        created_at=record.created_at.isoformat() if record.created_at else "",
     )
 
 
 @router.get("/history", response_model=list[RedTeamSessionResponse])
 async def get_attack_history(
+    limit: int = Query(50, ge=1, le=200),
+    db: AsyncSession = Depends(get_db),
     current_user: TokenData = Depends(
         require_role(["admin", "safety_engineer", "ml_engineer", "viewer"])
     ),
 ):
-    sessions = session_manager.list_sessions()
-    results = []
-    for s in sessions:
-        results.append(
-            RedTeamSessionResponse(
-                id=str(s.id),
-                target_agent_id=str(s.target_agent_id),
-                status="completed" if s.completed_at else ("error" if s.error else "running"),
-                strategy=s.strategy,
-                turns=[
-                    TurnResponse(
-                        turn_number=t.turn_number,
-                        prompt=t.prompt,
-                        response=t.response,
-                        judge_verdict=t.judge_verdict.value if t.judge_verdict else None,
-                        judge_rationale=t.judge_rationale,
-                    )
-                    for t in s.turns
-                ],
-                final_verdict=s.final_verdict.value if s.final_verdict else None,
-                created_at=s.created_at.isoformat(),
-            )
-        )
-    return results
+    records = await db.execute(
+        select(RedTeamSessionRecord).order_by(RedTeamSessionRecord.created_at.desc()).limit(limit)
+    )
+    return [_session_response(r) for r in records.scalars().all()]

@@ -64,24 +64,50 @@ class TestDecodeToken:
             decode_token("invalid.token.value")
 
 
+@pytest.fixture
+def default_keys(tmp_path):
+    """Throwaway keys standing in for the default key files (none are committed to the repo)."""
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    (tmp_path / "private_key.pem").write_bytes(
+        key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.TraditionalOpenSSL,
+            serialization.NoEncryption(),
+        )
+    )
+    (tmp_path / "public_key.pem").write_bytes(
+        key.public_key().public_bytes(
+            serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo
+        )
+    )
+    with patch("app.core.security._default_key_path", side_effect=lambda name: str(tmp_path / name)):
+        yield tmp_path
+
+
+@pytest.mark.usefixtures("default_keys")
 class TestLoadKeys:
     """Test key loading functions."""
 
-    def test_load_private_key_without_path_raises_error(self):
-        """Test that loading private key without path raises ValueError."""
+    def test_load_private_key_without_path_falls_back_to_default_key(self):
+        """Test that loading the private key without a configured path falls back to the bundled default key."""
         with patch("app.core.security.get_settings") as mock_settings:
             mock_settings.return_value.JWT_PRIVATE_KEY_PATH = ""
             mock_settings.return_value.JWT_ALGORITHM = "RS256"
-            with pytest.raises(ValueError, match="JWT_PRIVATE_KEY_PATH is required"):
-                load_private_key()
+            key, algorithm = load_private_key()
+            assert algorithm == "RS256"
+            assert "BEGIN RSA PRIVATE KEY" in key
 
-    def test_load_public_key_without_path_raises_error(self):
-        """Test that loading public key without path raises ValueError."""
+    def test_load_public_key_without_path_falls_back_to_default_key(self):
+        """Test that loading the public key without a configured path falls back to the bundled default key."""
         with patch("app.core.security.get_settings") as mock_settings:
             mock_settings.return_value.JWT_PUBLIC_KEY_PATH = ""
             mock_settings.return_value.JWT_ALGORITHM = "RS256"
-            with pytest.raises(ValueError, match="JWT_PUBLIC_KEY_PATH is required"):
-                load_public_key()
+            key, algorithm = load_public_key()
+            assert algorithm == "RS256"
+            assert "BEGIN PUBLIC KEY" in key
 
 
 class TestRequireRole:

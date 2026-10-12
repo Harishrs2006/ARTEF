@@ -1,13 +1,15 @@
-"use client";
+﻿"use client";
 
 import { useEffect, useState, useCallback } from "react";
+import { useRouter } from "next/navigation";
 import { DashboardLayout } from "@/components/ui/dashboard-layout";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { api } from "@/lib/api";
 import { formatDate, formatDuration, formatCost } from "@/lib/utils";
-import { useAuth } from "@/lib/auth";
+import { useAuth, getAccessToken } from "@/lib/auth";
 import {
   BarChart,
   Bar,
@@ -24,7 +26,7 @@ import {
   AreaChart,
   Area,
 } from "recharts";
-import { TrendingUp, TrendingDown, Target, AlertTriangle, CheckCircle, DollarSign, Clock, Filter } from "lucide-react";
+import { TrendingUp, TrendingDown, Target, AlertTriangle, CheckCircle, DollarSign, Clock, Filter, RefreshCw } from "lucide-react";
 
 interface RunSummary {
   id: string;
@@ -55,34 +57,52 @@ interface AnalyticsData {
 }
 
 export default function AnalyticsPage() {
+  const router = useRouter();
   const { isAuthenticated, isLoading } = useAuth();
   const [analytics, setAnalytics] = useState<AnalyticsData | null>(null);
   const [loading, setLoading] = useState(true);
   const [timeRange, setTimeRange] = useState("7d");
+  const [error, setError] = useState<string | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
 
-  const fetchAnalytics = useCallback(async () => {
-    setLoading(true);
+  const fetchAnalytics = useCallback(async (isRefresh = false) => {
+    if (isRefresh) {
+      setRefreshing(true);
+    } else {
+      setLoading(true);
+    }
+    setError(null);
+    
     try {
       const res = await api.get(`/analytics?range=${timeRange}`);
       setAnalytics(res.data);
     } catch (error) {
       console.error("Failed to fetch analytics:", error);
+      setError("Failed to load analytics. Please check your connection.");      setAnalytics(null);
     } finally {
       setLoading(false);
+      setRefreshing(false);
     }
   }, [timeRange]);
 
   useEffect(() => {
-    if (!isLoading) {
-      if (!isAuthenticated) {
-        window.location.href = "/login";
-      } else {
-        fetchAnalytics();
-      }
-    }
-  }, [isAuthenticated, isLoading, fetchAnalytics]);
+    const token = getAccessToken();
+    if (token) { fetchAnalytics(); return; }
+    if (!isLoading && !isAuthenticated) router.replace("/login");
+    else if (!isLoading && isAuthenticated) fetchAnalytics();
+  }, [isAuthenticated, isLoading, fetchAnalytics, router]);
 
-  if (isLoading || !isAuthenticated) {
+  useEffect(() => {
+    if (!isAuthenticated || loading) return;
+    
+    const interval = setInterval(() => {
+      fetchAnalytics(true);
+    }, 30000);
+    
+    return () => clearInterval(interval);
+  }, [isAuthenticated, loading, fetchAnalytics]);
+
+  if (isLoading && !getAccessToken()) {
     return (
       <DashboardLayout>
         <div className="flex h-[calc(100vh-4rem)] items-center justify-center">
@@ -131,16 +151,32 @@ export default function AnalyticsPage() {
           <div>
             <h1 className="text-3xl font-bold">Analytics</h1>
             <p className="text-muted-foreground">Deep insights into your evaluation data</p>
+            {error && (
+              <p className="text-sm text-destructive mt-1 flex items-center gap-1">
+                <AlertTriangle className="h-3 w-3" /> {error}
+              </p>
+            )}
           </div>
-          <Select value={timeRange} onValueChange={setTimeRange}>
-            <SelectTrigger className="w-48"><SelectValue placeholder="Time range" /></SelectTrigger>
-            <SelectContent>
-              <SelectItem value="7d">Last 7 days</SelectItem>
-              <SelectItem value="30d">Last 30 days</SelectItem>
-              <SelectItem value="90d">Last 90 days</SelectItem>
-              <SelectItem value="1y">Last year</SelectItem>
-            </SelectContent>
-          </Select>
+          <div className="flex gap-2">
+            <Button 
+              variant="outline" 
+              size="icon"
+              onClick={() => fetchAnalytics(true)}
+              disabled={refreshing}
+              title="Refresh analytics"
+            >
+              <RefreshCw className={`h-4 w-4 ${refreshing ? "animate-spin" : ""}`} />
+            </Button>
+            <Select value={timeRange} onValueChange={setTimeRange}>
+              <SelectTrigger className="w-48"><SelectValue placeholder="Time range" /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="7d">Last 7 days</SelectItem>
+                <SelectItem value="30d">Last 30 days</SelectItem>
+                <SelectItem value="90d">Last 90 days</SelectItem>
+                <SelectItem value="1y">Last year</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
         </div>
 
         <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
@@ -209,7 +245,7 @@ export default function AnalyticsPage() {
                 <CardContent>
                   <div className="h-80">
                     <ResponsiveContainer width="100%" height="100%">
-                      <AreaChart data={runsData.length > 0 ? runsData : [{ name: "Day 1", value: 0 }]}>
+                      <AreaChart data={runsData}>
                         <defs>
                           <linearGradient id="colorRuns" x1="0" y1="0" x2="0" y2="1">
                             <stop offset="5%" stopColor="hsl(var(--primary))" stopOpacity={0.3} />
@@ -232,7 +268,7 @@ export default function AnalyticsPage() {
                 <CardContent>
                   <div className="h-80">
                     <ResponsiveContainer width="100%" height="100%">
-                      <LineChart data={passRateData.length > 0 ? passRateData : [{ name: "Day 1", value: 0 }]}>
+                      <LineChart data={passRateData}>
                         <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
                         <XAxis dataKey="name" className="text-xs" />
                         <YAxis className="text-xs" domain={[0, 100]} />
@@ -249,7 +285,7 @@ export default function AnalyticsPage() {
                 <CardContent>
                   <div className="h-80">
                     <ResponsiveContainer width="100%" height="100%">
-                      <BarChart data={regressionData.length > 0 ? regressionData : [{ name: "Day 1", value: 0 }]}>
+                      <BarChart data={regressionData}>
                         <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
                         <XAxis dataKey="name" className="text-xs" />
                         <YAxis className="text-xs" />
@@ -266,7 +302,7 @@ export default function AnalyticsPage() {
                 <CardContent>
                   <div className="h-80">
                     <ResponsiveContainer width="100%" height="100%">
-                      <LineChart data={costData.length > 0 ? costData : [{ name: "Day 1", value: 0 }]}>
+                      <LineChart data={costData}>
                         <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
                         <XAxis dataKey="name" className="text-xs" />
                         <YAxis className="text-xs" />
@@ -350,7 +386,7 @@ export default function AnalyticsPage() {
                       <LineChart data={analytics?.latency_over_time?.map(d => ({
                         name: new Date(d.date).toLocaleDateString("en-US", { month: "short", day: "numeric" }),
                         value: d.latency,
-                      })) || [{ name: "Day 1", value: 0 }]}>
+                      })) || []}>
                         <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
                         <XAxis dataKey="name" className="text-xs" />
                         <YAxis className="text-xs" />
@@ -367,7 +403,7 @@ export default function AnalyticsPage() {
                 <CardContent>
                   <div className="h-80">
                     <ResponsiveContainer width="100%" height="100%">
-                      <BarChart data={runsData.length > 0 ? runsData : [{ name: "Day 1", value: 0 }]}>
+                      <BarChart data={runsData}>
                         <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
                         <XAxis dataKey="name" className="text-xs" />
                         <YAxis className="text-xs" />
@@ -462,3 +498,4 @@ export default function AnalyticsPage() {
     </DashboardLayout>
   );
 }
+

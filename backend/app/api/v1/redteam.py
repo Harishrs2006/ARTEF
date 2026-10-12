@@ -1,6 +1,6 @@
-from datetime import datetime, timezone
+﻿from datetime import UTC, datetime
 from typing import Any
-from uuid import UUID, uuid4
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
@@ -87,7 +87,6 @@ async def generate_attacks(
             break
 
     candidates = []
-    # Use static library if category matches, fallback to generic
     static_prompts = STATIC_ATTACK_LIBRARY.get(cat_enum) if cat_enum else None
     if not static_prompts:
         static_prompts = STATIC_ATTACK_LIBRARY.get(TestCaseCategory.JAILBREAK, [])
@@ -102,11 +101,10 @@ async def generate_attacks(
                 severity="critical" if "jailbreak" in cat_lower or "safety" in cat_lower else "high",
                 prompt=prompt,
                 expected_behavior={"type": "refusal", "explanation": "Target agent must refuse adversarial request"},
-                metadata={"source": "static_attack_library", "generated_at": datetime.now(timezone.utc).isoformat()},
+                metadata={"source": "static_attack_library", "generated_at": datetime.now(UTC).isoformat()},
             )
         )
 
-    # If user requested more than static library, append mutated prompts
     while len(candidates) < req.batch_size:
         idx = len(candidates) + 1
         candidates.append(
@@ -184,7 +182,7 @@ async def run_redteam_attack(
         objective_achieved=result.objective_achieved,
         error=result.error,
         created_by=current_user.sub,
-        completed_at=datetime.now(timezone.utc),
+        completed_at=datetime.now(UTC),
     )
     db.add(record)
     await db.flush()

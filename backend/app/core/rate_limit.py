@@ -1,4 +1,4 @@
-import time
+﻿import time
 from functools import wraps
 
 from fastapi import HTTPException, Request, status
@@ -11,12 +11,11 @@ settings = get_settings()
 logger = get_logger(__name__)
 
 
-# Redis-based rate limiter for production
 class RedisRateLimiter:
     def __init__(self):
         self.redis_client = None
         self._initialized = False
-    
+
     async def _ensure_client(self):
         if not self._initialized:
             try:
@@ -29,75 +28,66 @@ class RedisRateLimiter:
             except Exception as e:
                 logger.warning("redis_connection_failed", error=str(e))
                 self.redis_client = None
-    
+
     async def check_rate_limit(
         self, key: str, limit: int = None, window: int = None
     ) -> tuple[bool, int, int]:
         limit = limit or settings.RATE_LIMIT_REQUESTS
         window = window or settings.RATE_LIMIT_WINDOW_SECONDS
-        
+
         await self._ensure_client()
-        
+
         if not self.redis_client:
-            # Fallback to allowing request if Redis unavailable
             return True, 0, window
-        
+
         try:
             pipe = self.redis_client.pipeline()
             now = time.time()
             key_with_prefix = f"ratelimit:{key}"
-            
-            # Remove old entries
+
             pipe.zremrangebyscore(key_with_prefix, 0, now - window)
-            # Count current requests
             pipe.zcard(key_with_prefix)
-            # Add current request
             pipe.zadd(key_with_prefix, {str(now): now})
-            # Set expiration
             pipe.expire(key_with_prefix, window + 1)
-            
+
             results = await pipe.execute()
             current = results[1]
-            
+
             if current >= limit:
-                # Get oldest timestamp for retry_after calculation
                 oldest = await self.redis_client.zrange(key_with_prefix, 0, 0, withscores=True)
                 if oldest:
                     retry_after = int(oldest[0][1] + window - now) + 1
                 else:
                     retry_after = window
                 return False, current, max(retry_after, 1)
-            
+
             return True, current + 1, window
-            
+
         except Exception as e:
             logger.error("rate_limit_check_failed", error=str(e))
-            # Fail open on error to avoid blocking legitimate traffic
             return True, 0, window
-    
+
     async def get_remaining(self, key: str, limit: int = None, window: int = None) -> int:
         limit = limit or settings.RATE_LIMIT_REQUESTS
         window = window or settings.RATE_LIMIT_WINDOW_SECONDS
-        
+
         await self._ensure_client()
-        
+
         if not self.redis_client:
             return limit
-        
+
         try:
             now = time.time()
             key_with_prefix = f"ratelimit:{key}"
-            
-            # Remove old entries and count
+
             await self.redis_client.zremrangebyscore(key_with_prefix, 0, now - window)
             current = await self.redis_client.zcard(key_with_prefix)
-            
+
             return max(0, limit - current)
         except Exception:
             return limit
 
 
-# In-memory rate limiter with sync interface
 class RateLimiter:
     def __init__(self):
         self._windows: dict[str, list[float]] = {}
@@ -152,7 +142,6 @@ class RateLimiter:
         return max(0, limit - current)
 
 
-# In-memory fallback for development (async-compatible)
 class InMemoryRateLimiter(RateLimiter):
     async def check_rate_limit(
         self, key: str, limit: int = None, window: int = None
@@ -163,11 +152,9 @@ class InMemoryRateLimiter(RateLimiter):
         return super().get_remaining(key, limit, window)
 
 
-# Use Redis in production, in-memory for development
 rate_limiter = RedisRateLimiter() if settings.is_production else InMemoryRateLimiter()
 
 
-# SECURITY: List of trusted proxy IPs (should be configured via environment)
 TRUSTED_PROXY_IPS = {"127.0.0.1", "::1"}  # Add your load balancer IPs here
 
 
@@ -177,18 +164,14 @@ def _get_client_ip(request: Request) -> str:
     Only trusts X-Forwarded-For from known proxy IPs.
     """
     client_ip = request.client.host if request.client else "unknown"
-    
-    # Only trust X-Forwarded-For if request comes from trusted proxy
+
     if client_ip in TRUSTED_PROXY_IPS:
         xff = request.headers.get("x-forwarded-for")
         if xff:
-            # Get the rightmost IP from chain (closest to our proxy)
-            # Format: client, proxy1, proxy2, our_proxy
             ips = [ip.strip() for ip in xff.split(",")]
             if ips:
-                # Use the leftmost (original client) IP
                 return ips[0]
-    
+
     return client_ip
 
 
@@ -198,7 +181,6 @@ async def rate_limit_dependency(
     window: int = None,
 ) -> None:
     client_ip = _get_client_ip(request)
-    # Use user ID if authenticated for per-user limiting, else IP + path
     user_key = getattr(request.state, "user_id", None) or client_ip
     key = f"{user_key}:{request.url.path}"
     allowed, current, retry_after = await rate_limiter.check_rate_limit(key, limit, window)

@@ -52,33 +52,42 @@ from uuid import uuid4  # noqa: E402
 
 from app.core.config import Settings  # noqa: E402
 
+# Throwaway keys generated above (no key material is committed to the repository).
+PRIVATE_KEY = _private_key.read_text(encoding="utf-8")
+PUBLIC_KEY = _public_key.read_text(encoding="utf-8")
+
+
+def make_test_settings() -> Settings:
+    """Build the default settings used across backend tests."""
+    return Settings(
+        SECRET_KEY='a' * 32,
+        DATABASE_URL='sqlite:///./test.db',
+        REDIS_URL='redis://localhost:6379/0',
+        CELERY_BROKER_URL='redis://localhost:6379/1',
+        CELERY_RESULT_BACKEND='redis://localhost:6379/2',
+        ENVIRONMENT='testing',
+        DEBUG=False,
+        JWT_PRIVATE_KEY_PATH=str(_private_key),
+        JWT_PUBLIC_KEY_PATH=str(_public_key),
+        EVAL_MODE='local',
+        DEV_MOCK_JUDGE=True,
+        DEV_MOCK_TARGET_AGENT=True,
+        DEV_SEED_DATA=True,
+        S3_ACCESS_KEY='test_access_key',
+        S3_SECRET_KEY='test_secret_key',
+    )
+
 
 @pytest.fixture
 def test_settings():
     """Provide test settings for all tests."""
-    return Settings(
-        SECRET_KEY="a" * 32,
-        DATABASE_URL="postgresql+asyncpg://test:test@localhost/test",
-        REDIS_URL="redis://localhost:6379/0",
-        CELERY_BROKER_URL="redis://localhost:6379/1",
-        CELERY_RESULT_BACKEND="redis://localhost:6379/2",
-        ENVIRONMENT="testing",
-        DEBUG=False,
-        JWT_PRIVATE_KEY_PATH=os.environ["JWT_PRIVATE_KEY_PATH"],
-        JWT_PUBLIC_KEY_PATH=os.environ["JWT_PUBLIC_KEY_PATH"],
-        EVAL_MODE="local",
-        DEV_MOCK_JUDGE=True,
-        DEV_MOCK_TARGET_AGENT=True,
-        DEV_SEED_DATA=True,
-        S3_ACCESS_KEY="test_access_key",
-        S3_SECRET_KEY="test_secret_key",
-    )
+    return make_test_settings()
 
 
 @pytest.fixture(autouse=True)
 def mock_settings(test_settings):
     """Override settings globally for tests."""
-    with patch("app.core.config.get_settings", return_value=test_settings):
+    with patch('app.core.config.get_settings', return_value=test_settings):
         yield
 
 
@@ -87,6 +96,7 @@ def client():
     """Provide a FastAPI test client."""
     from fastapi.testclient import TestClient
     from app.main import app
+
     with TestClient(app) as c:
         yield c
 
@@ -113,7 +123,7 @@ def sample_access_token():
 @pytest.fixture
 def admin_headers(sample_access_token):
     """Provide authorization headers for admin requests."""
-    return {"Authorization": f"Bearer {sample_access_token}"}
+    return {'Authorization': f'Bearer {sample_access_token}'}
 
 
 @pytest.fixture
@@ -137,4 +147,4 @@ def viewer_token():
 @pytest.fixture
 def viewer_headers(viewer_token):
     """Provide authorization headers for viewer requests."""
-    return {"Authorization": f"Bearer {viewer_token}"}
+    return {'Authorization': f'Bearer {viewer_token}'}

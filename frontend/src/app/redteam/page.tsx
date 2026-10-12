@@ -1,6 +1,7 @@
-"use client";
+﻿"use client";
 
 import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import { DashboardLayout } from "@/components/ui/dashboard-layout";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -9,8 +10,8 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { api } from "@/lib/api";
-import { useAuth } from "@/lib/auth";
-import { Plus, Loader2, Download, Shield, Zap, FileText, RefreshCw } from "lucide-react";
+import { useAuth, getAccessToken } from "@/lib/auth";
+import { Plus, Loader2, Download, Shield, Zap, FileText, RefreshCw, AlertTriangle } from "lucide-react";
 
 interface AttackCandidate {
   test_case_id: string;
@@ -46,6 +47,7 @@ interface TargetAgent {
 }
 
 export default function RedTeamPage() {
+  const router = useRouter();
   const { isAuthenticated, isLoading } = useAuth();
   const [agents, setAgents] = useState<TargetAgent[]>([]);
   const [loading, setLoading] = useState(true);
@@ -59,8 +61,17 @@ export default function RedTeamPage() {
   const [maxTurns, setMaxTurns] = useState(8);
   const [attackHistory, setAttackHistory] = useState<RedTeamSession[]>([]);
   const [loadingHistory, setLoadingHistory] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
 
-  const fetchData = async () => {
+  const fetchData = async (isRefresh = false) => {
+    if (isRefresh) {
+      setRefreshing(true);
+    } else {
+      setLoading(true);
+    }
+    setError(null);
+    
     try {
       const [agentsRes] = await Promise.all([
         api.get("/agents"),
@@ -68,8 +79,10 @@ export default function RedTeamPage() {
       setAgents(agentsRes.data);
     } catch (error) {
       console.error("Failed to fetch agents:", error);
+      setError("No agents available. Configure an agent first.");      setAgents([]);
     } finally {
       setLoading(false);
+      setRefreshing(false);
     }
   };
 
@@ -87,15 +100,25 @@ export default function RedTeamPage() {
   };
 
   useEffect(() => {
-    if (!isLoading) {
-      if (!isAuthenticated) {
-        window.location.href = "/login";
-      } else {
-        fetchData();
-        fetchAttackHistory();
-      }
+    const token = getAccessToken();
+    if (!token) {
+      router.replace("/login");
+    } else {
+      fetchData();
+      fetchAttackHistory();
     }
-  }, [isAuthenticated, isLoading]);
+  }, [router]);
+
+  useEffect(() => {
+    if (!isAuthenticated || loading) return;
+    
+    const interval = setInterval(() => {
+      fetchData(true);
+      fetchAttackHistory();
+    }, 30000);
+    
+    return () => clearInterval(interval);
+  }, [isAuthenticated, loading]);
 
   const handleGenerate = async () => {
     if (!category) return;
@@ -151,7 +174,7 @@ export default function RedTeamPage() {
     { value: "privilege_escalation", label: "Privilege Escalation" },
   ];
 
-  if (isLoading || !isAuthenticated) {
+  if (isLoading && !getAccessToken()) {
     return (
       <DashboardLayout>
         <div className="flex h-[calc(100vh-4rem)] items-center justify-center">
@@ -168,7 +191,24 @@ export default function RedTeamPage() {
           <div>
             <h1 className="text-3xl font-bold">Red Teaming</h1>
             <p className="text-muted-foreground">Generate and run adversarial attacks against target agents</p>
+            {error && (
+              <p className="text-sm text-destructive mt-1 flex items-center gap-1">
+                <AlertTriangle className="h-3 w-3" /> {error}
+              </p>
+            )}
           </div>
+          <Button 
+            variant="outline" 
+            size="icon"
+            onClick={() => {
+              fetchData(true);
+              fetchAttackHistory();
+            }}
+            disabled={refreshing}
+            title="Refresh data"
+          >
+            <RefreshCw className={`h-4 w-4 ${refreshing ? "animate-spin" : ""}`} />
+          </Button>
         </div>
 
         <Tabs defaultValue="generate" className="space-y-4">

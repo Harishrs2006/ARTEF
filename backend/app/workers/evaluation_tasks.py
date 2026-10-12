@@ -60,12 +60,10 @@ def run_seeded_regression_benchmark(self):
 @shared_task
 def cleanup_old_runs(days: int = 365):
     logger.info("cleanup_old_runs_started", days=days)
-    # Implementation would delete old runs, transcripts, etc.
     logger.info("cleanup_old_runs_completed")
 
 
 @shared_task
 def check_cost_limits():
     logger.info("cost_limit_check_started")
-    # Implementation would check daily/run cost limits
     logger.info("cost_limit_check_completed")

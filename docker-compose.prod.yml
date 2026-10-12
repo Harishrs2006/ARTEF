@@ -3,7 +3,6 @@ version: "3.9"
 services:
   postgres:
     image: postgres:16-alpine
-    container_name: redteam-postgres-prod
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
@@ -26,7 +25,6 @@ services:
 
   redis:
     image: redis:7-alpine
-    container_name: redteam-redis-prod
     ports:
       - "6379:6379"
     volumes:
@@ -45,7 +43,6 @@ services:
 
   chromadb:
     image: chromadb/chroma:0.4.22
-    container_name: redteam-chromadb-prod
     ports:
       - "8001:8000"  # host 8001; the API owns host port 8000
     volumes:
@@ -62,7 +59,6 @@ services:
 
   minio:
     image: minio/minio:latest
-    container_name: redteam-minio-prod
     command: server /data --console-address ":9001"
     ports:
       - "9000:9000"
@@ -176,6 +172,9 @@ services:
         # Inlined into the browser bundle at build time.
         NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000/api/v1}
     container_name: redteam-frontend-prod
+    restart: unless-stopped
+    environment:
+      - API_PROXY_TARGET=http://backend:8000/api/v1
     ports:
       - "3000:3000"
     depends_on:
@@ -190,7 +189,6 @@ services:
 
   prometheus:
     image: prom/prometheus:v2.48.0
-    container_name: redteam-prometheus-prod
     ports:
       - "9090:9090"
     volumes:
@@ -203,7 +201,6 @@ services:
 
   grafana:
     image: grafana/grafana:10.2.0
-    container_name: redteam-grafana-prod
     ports:
       - "3001:3000"
     environment:

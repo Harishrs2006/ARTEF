@@ -1,9 +1,11 @@
-import pytest
-from unittest.mock import patch, MagicMock
+from datetime import timedelta
+from unittest.mock import MagicMock, mock_open, patch
 
+import pytest
 from fastapi.testclient import TestClient
-from app.main import app
+
 from app.core.config import Settings
+from app.main import app
 
 
 def get_test_settings():
@@ -94,6 +96,11 @@ class TestProtectedEndpoints:
         """Test that list_runs requires authentication."""
         response = client.get("/api/v1/runs/")
         assert response.status_code == 401
+
+    def test_list_runs_with_valid_sort_param(self, client, viewer_headers):
+        """Test that valid sort params are accepted for authenticated runs listing."""
+        response = client.get("/api/v1/runs/?skip=0&limit=10&sort=created_at:desc", headers=viewer_headers)
+        assert response.status_code == 200
 
 
 class TestHealthEndpoints:

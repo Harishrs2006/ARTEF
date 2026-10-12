@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
 ARTEF CLI - Agent Red-Teaming & Evaluation Framework Command Line Interface
 """
@@ -65,7 +65,6 @@ def cli(verbose: bool, config: Optional[str]):
         import logging
         logging.getLogger().setLevel(logging.DEBUG)
     if config:
-        # Load custom config
         pass
 
 
@@ -158,7 +157,7 @@ async def _suite_list():
                     suite.name,
                     str(suite.version),
                     str(len(suite.test_cases)),
-                    "✓" if suite.is_active else "✗",
+                    "âœ“" if suite.is_active else "âœ—",
                     suite.created_at.strftime("%Y-%m-%d"),
                 )
 
@@ -308,7 +307,6 @@ async def _run_create(suite_id: str, agent_id: str, baseline_id: str):
             console.print(f"  Agent: {agent.name}")
             console.print(f"  Baseline: {baseline.name if baseline else 'None'}")
 
-            # Start evaluation
             from app.workers.evaluation_tasks import run_evaluation
             run_evaluation.delay(str(new_run.id))
             console.print("[yellow]Evaluation started in background[/yellow]")
@@ -407,7 +405,6 @@ async def _run_get(run_id: str):
             if run.error_message:
                 console.print(f"  [red]Error: {run.error_message}[/red]")
 
-            # Show results
             table = Table(title="Results")
             table.add_column("Test Case", style="cyan")
             table.add_column("Verdict")
@@ -455,7 +452,6 @@ async def _evaluate_run(config: str):
             eval_config = json.load(f)
 
     console.print(f"[green]Starting evaluation: {eval_config.get('name', 'Unnamed')}[/green]")
-    # Implementation would go here
     console.print("[yellow]Evaluation started (background task)[/yellow]")
     await close_db()
 
@@ -782,7 +778,6 @@ async def _redteam_run(agent_id: str, suite_id: str, turns: int):
             redteam.max_turns = turns
 
             console.print(f"[green]Starting red-team attack on {agent.name}[/green]")
-            # Would run the red-team agent here
             console.print("[yellow]Red-team attack completed[/yellow]")
     finally:
         await close_db()
@@ -893,7 +888,7 @@ async def _baseline_list():
                     str(b.suite_id)[:8],
                     str(b.suite_version),
                     str(b.run_id)[:8],
-                    "✓" if b.is_active else "✗",
+                    "âœ“" if b.is_active else "âœ—",
                     b.approved_at.strftime("%Y-%m-%d") if b.approved_at else "N/A",
                     b.created_at.strftime("%Y-%m-%d"),
                 )

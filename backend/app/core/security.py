@@ -1,11 +1,12 @@
-import os
+﻿import os
+import types
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+import bcrypt
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer, SecurityScopes
-import types
-import bcrypt
+
 if not hasattr(bcrypt, "__about__"):
     bcrypt.__about__ = types.SimpleNamespace(__version__="4.0.0")
 if not getattr(bcrypt, "_has_72_patch", False):
@@ -63,53 +64,56 @@ def get_password_hash(password: str) -> str:
     return pwd_context.hash(password)
 
 
-def _resolve_key_path(path: str) -> str:
+def _default_key_path(key_name: str) -> str:
+    project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+    default = os.path.normpath(os.path.join(project_root, "backend", "app", "core", "keys", key_name))
+    if os.path.exists(default):
+        return default
+
+    local = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "keys", key_name))
+    if os.path.exists(local):
+        return local
+
+    return default
+
+
+def _resolve_key_path(path: str | None, key_name: str) -> str:
     """
     Resolve key path with security constraints.
     SECURITY: Only allows absolute paths or paths within project root to prevent path traversal.
     """
     if not path:
-        return path
-    
-    # Normalize the path to prevent traversal attacks
+        return _default_key_path(key_name)
+
     path = os.path.normpath(path)
-    
-    # SECURITY: Block path traversal attempts
+
     if ".." in path or path.startswith("/etc") or path.startswith("\\\\"):
         raise ValueError(f"Invalid key path (potential path traversal): {path}")
-    
-    # If absolute path, verify it exists and is readable
+
     if os.path.isabs(path):
         if not os.path.exists(path):
             raise FileNotFoundError(f"Key file not found: {path}")
-        # Verify it's a regular file (not a directory or symlink)
         if not os.path.isfile(path):
             raise ValueError(f"Key path must be a regular file: {path}")
         return path
-    
-    # For relative paths, only search within project root
+
     try:
         project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-        
-        # Try relative to project root
+
         candidate = os.path.normpath(os.path.join(project_root, path))
-        
-        # SECURITY: Ensure resolved path is still within project root
+
         if not candidate.startswith(project_root):
             raise ValueError(f"Key path escapes project root: {path}")
-        
+
         if os.path.exists(candidate) and os.path.isfile(candidate):
             return candidate
-        
-        # Try app/core/keys directory as fallback
+
         candidate2 = os.path.normpath(os.path.join(project_root, "backend", "app", "core", "keys", os.path.basename(path)))
         if candidate2.startswith(project_root) and os.path.exists(candidate2) and os.path.isfile(candidate2):
             return candidate2
-            
+
     except Exception as e:
         raise ValueError(f"Failed to resolve key path: {e}")
-        pass
-    # Fallback to keys directory next to this file
     keys_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "keys")
     candidate3 = os.path.join(keys_dir, os.path.basename(path))
     if os.path.exists(candidate3):
@@ -119,7 +123,7 @@ def _resolve_key_path(path: str) -> str:
 
 def _read_key_file(path: str) -> str:
     """Read a key file, raising FileNotFoundError if it doesn't exist."""
-    resolved = _resolve_key_path(path)
+    resolved = _resolve_key_path(path, "private_key.pem" if "private" in (path or "") else "public_key.pem")
     if not os.path.exists(resolved):
         raise FileNotFoundError(f"Key file not found: {path} (resolved: {resolved})")
     with open(resolved) as f:
@@ -128,16 +132,14 @@ def _read_key_file(path: str) -> str:
 
 def load_private_key() -> tuple[str, str]:
     settings = get_settings()
-    if not settings.JWT_PRIVATE_KEY_PATH:
-        raise ValueError("JWT_PRIVATE_KEY_PATH is required")
-    return _read_key_file(settings.JWT_PRIVATE_KEY_PATH), settings.JWT_ALGORITHM
+    key_path = settings.JWT_PRIVATE_KEY_PATH or _default_key_path("private_key.pem")
+    return _read_key_file(key_path), settings.JWT_ALGORITHM
 
 
 def load_public_key() -> tuple[str, str]:
     settings = get_settings()
-    if not settings.JWT_PUBLIC_KEY_PATH:
-        raise ValueError("JWT_PUBLIC_KEY_PATH is required")
-    return _read_key_file(settings.JWT_PUBLIC_KEY_PATH), settings.JWT_ALGORITHM
+    key_path = settings.JWT_PUBLIC_KEY_PATH or _default_key_path("public_key.pem")
+    return _read_key_file(key_path), settings.JWT_ALGORITHM
 
 
 def create_access_token(
@@ -223,7 +225,7 @@ async def get_current_user(
             detail="Not authenticated",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    
+
     token_data = decode_token(token)
     if security_scopes.scopes:
         for scope in security_scopes.scopes:

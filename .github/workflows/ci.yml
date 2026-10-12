@@ -106,7 +106,10 @@ jobs:
       - name: Unit tests
         run: pnpm test
 
-      - name: Production build (includes lint)
+      - name: Lint (next build skips it, see next.config.mjs)
+        run: pnpm lint
+
+      - name: Production build
         run: pnpm build
 
   docker-build:

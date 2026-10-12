@@ -68,6 +68,21 @@ def write_env() -> None:
                 "# judge LLM (set PRIMARY_JUDGE_API_KEY etc.). Matchers never call an LLM.",
                 "EVAL_MODE=local",
                 "",
+                "# Used only by scripts/seed_demo_data.py. Random per machine; log in as 'admin'",
+                "# with SEED_ADMIN_PASSWORD.",
+                *[
+                    f"SEED_{role}_PASSWORD={secrets.token_urlsafe(12)}"
+                    for role in ("ADMIN", "SAFETY", "ML", "QA", "REVIEWER", "VIEWER")
+                ],
+                "SEED_EMAIL_DOMAIN=redteam.local",
+                "# Demo target agents (demo/target_agent.py). The prod/staging entries are",
+                "# placeholders that are never called by the demo.",
+                "SEED_MOCK_AGENT_V1_URL=http://localhost:9001/chat",
+                "SEED_MOCK_AGENT_V2_URL=http://localhost:9002/chat",
+                "SEED_PROD_AGENT_URL=https://example.invalid/agent/chat",
+                "SEED_STAGING_AGENT_URL=https://example.invalid/staging/agent/chat",
+                f"SEED_AGENT_AUTH_TOKEN={secrets.token_urlsafe(24)}",
+                "",
             ]
         ),
         encoding="utf-8",

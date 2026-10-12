@@ -1,18 +1,17 @@
-from dataclasses import dataclass
+﻿from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any
 
 from app.core.logging import get_logger
 from app.security.model_scanner.detectors import (
-    PickleDetector,
+    HuggingFaceDetector,
     JoblibDetector,
+    ONNXDetector,
+    PickleDetector,
     PyTorchDetector,
     TensorFlowDetector,
-    ONNXDetector,
-    HuggingFaceDetector,
 )
-from app.security.model_scanner.report import ScanReport, ScanFinding, SeverityLevel
+from app.security.model_scanner.report import ScanReport
 
 logger = get_logger(__name__)
 
@@ -51,13 +50,10 @@ class ModelScanner:
         findings = []
         errors = []
 
-        # Prevent path traversal
         path = Path(model_path).resolve()
         if ".." in model_path or not path.is_absolute():
-            # Allow relative but resolve, then ensure not escaping allowed roots
             pass
-        allowed_prefixes = [Path("/tmp"), Path("/models"), Path("./models"), Path(".").resolve()]
-        # In development allow current directory; in production restrict
+        allowed_prefixes = [Path("/tmp"), Path("/models"), Path("./models"), Path().resolve()]
         if model_path.startswith(("/", "\\")) and not any(str(path).startswith(str(p.resolve()) if p.exists() else str(p)) for p in allowed_prefixes):
             return ScanReport(
                 model_id=model_id or model_path,

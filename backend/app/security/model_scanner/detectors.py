@@ -48,7 +48,6 @@ class PickleDetector(BaseDetector):
             "ctypes",
             "multiprocessing",
             "threading",
-            "subprocess",
             "commands",
             "popen2",
             # os.* functions pickle under the platform module name
@@ -301,7 +300,7 @@ class TensorFlowDetector(BaseDetector):
                             detector="TensorFlowDetector",
                             finding_type="load_failed",
                             severity=SeverityLevel.MEDIUM,
-                            description=f"Failed to load TensorFlow model: {str(e)}",
+                            description=f"Failed to load TensorFlow model: {e!s}",
                             file_path=str(file_path),
                         )
                     )
@@ -322,7 +321,7 @@ class TensorFlowDetector(BaseDetector):
                     detector="TensorFlowDetector",
                     finding_type="scan_error",
                     severity=SeverityLevel.MEDIUM,
-                    description=f"Error scanning TensorFlow file: {str(e)}",
+                    description=f"Error scanning TensorFlow file: {e!s}",
                     file_path=str(file_path),
                 )
             )
@@ -380,7 +379,7 @@ class ONNXDetector(BaseDetector):
                     detector="ONNXDetector",
                     finding_type="onnx_invalid",
                     severity=SeverityLevel.HIGH,
-                    description=f"ONNX model validation failed: {str(e)}",
+                    description=f"ONNX model validation failed: {e!s}",
                     file_path=str(file_path),
                 )
             )
@@ -430,7 +429,7 @@ class HuggingFaceDetector(BaseDetector):
                     detector="HuggingFaceDetector",
                     finding_type="safetensors_error",
                     severity=SeverityLevel.MEDIUM,
-                    description=f"Error reading SafeTensors: {str(e)}",
+                    description=f"Error reading SafeTensors: {e!s}",
                     file_path=str(file_path),
                 )
             )
@@ -443,7 +442,7 @@ class HuggingFaceDetector(BaseDetector):
         try:
             import json
 
-            with open(file_path, "r") as f:
+            with open(file_path) as f:
                 config = json.load(f)
 
             findings.append(
@@ -479,7 +478,7 @@ class HuggingFaceDetector(BaseDetector):
                     detector="HuggingFaceDetector",
                     finding_type="config_parse_error",
                     severity=SeverityLevel.LOW,
-                    description=f"Error parsing config: {str(e)}",
+                    description=f"Error parsing config: {e!s}",
                     file_path=str(file_path),
                 )
             )

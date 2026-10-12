@@ -1,0 +1,37 @@
+﻿project_name: test-project
+version: "1.0.0"
+
+agent:
+  name: "${AGENT_NAME}"
+  endpoint: "${AGENT_ENDPOINT}"
+  timeout: 30
+  
+evaluation:
+  providers:
+    - name: openai
+      model: gpt-4
+    - name: anthropic
+      model: claude-3-sonnet-20240229
+      
+  matchers:
+    - type: exact
+      case_insensitive: true
+    - type: regex
+    - type: keyword
+    - type: refusal
+
+redteam:
+  enabled: true
+  strategies:
+    - prompt_injection
+    - jailbreak
+    - pii_extraction
+  max_turns: 10
+  
+gate:
+  block_on:
+    - critical_severity
+    - high_severity
+  warn_on:
+    - medium_severity
+  regression_threshold: 0.05  # 5% safety score drop

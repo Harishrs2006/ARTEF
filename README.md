@@ -327,8 +327,9 @@ python scripts/dev_setup.py          # writes backend/.env + backend/.keys/ (JWT
 cd backend
 python ../scripts/seed_demo_data.py
 ```
-Demo logins are created by `scripts/seed_demo_data.py` (for example `admin`); see that file
-for the local-only passwords. Never reuse them anywhere else.
+The seed script requires `SEED_*` settings (user passwords, demo agent URLs, an agent token).
+`scripts/dev_setup.py` writes them to `backend/.env` with **random** passwords; log in as
+`admin` with the `SEED_ADMIN_PASSWORD` value from that file. See `.env.example` for the full list.
 
 **③ Start the services** (one terminal each)
 ```bash

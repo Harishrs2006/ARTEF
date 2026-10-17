@@ -422,7 +422,7 @@ flowchart TD
 
 ### SQLite Compatibility Layer
 
-Located in [`backend/app/core/sqlite_compat.py`](file:///c:/Users/Nitesh-PC/Desktop/PRO/ARTF/agent-redteam-framework/backend/app/core/sqlite_compat.py):
+Located in [`backend/app/core/sqlite_compat.py`](../backend/app/core/sqlite_compat.py):
 1. **PostgreSQL JSONB Compatibility**: Maps `JSONB` and dialect-specific JSON operators to SQLite `JSON` or text serialisation.
 2. **UUID Support**: Registers native Python `uuid.UUID` converters to string for SQLite drivers.
 3. **Foreign Key Enforcement**: Hooks into `connect` event to execute `PRAGMA foreign_keys = ON;`.

@@ -44,7 +44,7 @@ services:
   chromadb:
     image: chromadb/chroma:0.4.22
     ports:
-      - "8001:8000"  # host 8001; the API owns host port 8000
+      - "8000:8000"
     volumes:
       - chroma_prod_data:/chroma/chroma
     environment:
@@ -76,10 +76,8 @@ services:
 
   backend:
     build:
-      context: .
-      dockerfile: backend/Dockerfile
-      target: production
-    container_name: redteam-backend-prod
+      context: ./backend
+      dockerfile: Dockerfile
     environment:
       - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       - REDIS_URL=redis://redis:6379/0
@@ -95,8 +93,6 @@ services:
       - SECRET_KEY=${SECRET_KEY}
       - JWT_PRIVATE_KEY_PATH=/secrets/jwt_private_key.pem
       - JWT_PUBLIC_KEY_PATH=/secrets/jwt_public_key.pem
-      - PRIMARY_JUDGE_API_KEY=${PRIMARY_JUDGE_API_KEY:-}
-      - SECONDARY_JUDGE_API_KEY=${SECONDARY_JUDGE_API_KEY:-}
     ports:
       - "8000:8000"
     depends_on:
@@ -109,11 +105,11 @@ services:
       minio:
         condition: service_healthy
     volumes:
+      - ./backend:/app
+      - ./evaluation:/app/evaluation:ro
       - ./secrets:/secrets:ro
     deploy:
-      # One API container: it publishes host port 8000, which two replicas cannot share
-      # (scale behind a reverse proxy instead).
-      replicas: 1
+      replicas: 2
       resources:
         limits:
           memory: 2G
@@ -122,12 +118,9 @@ services:
 
   worker:
     build:
-      context: .
-      dockerfile: backend/Dockerfile
-      target: production
-    # No container_name: it must be unique, which conflicts with replicas > 1.
-    # Consume every queue the tasks are routed to (celery_app.task_routes).
-    command: celery -A app.workers.celery_app worker --loglevel=info --concurrency=4 -Q default,evaluation,redteam,maintenance
+      context: ./backend
+      dockerfile: Dockerfile
+    command: celery -A app.workers.celery_app worker --loglevel=info --concurrency=4
     environment:
       - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       - REDIS_URL=redis://redis:6379/0
@@ -140,11 +133,6 @@ services:
       - S3_SECRET_KEY=${MINIO_ROOT_PASSWORD}
       - S3_BUCKET=redteam-artifacts
       - EVAL_MODE=production
-      - SECRET_KEY=${SECRET_KEY}
-      - JWT_PRIVATE_KEY_PATH=/secrets/jwt_private_key.pem
-      - JWT_PUBLIC_KEY_PATH=/secrets/jwt_public_key.pem
-      - PRIMARY_JUDGE_API_KEY=${PRIMARY_JUDGE_API_KEY:-}
-      - SECONDARY_JUDGE_API_KEY=${SECONDARY_JUDGE_API_KEY:-}
     depends_on:
       postgres:
         condition: service_healthy
@@ -155,7 +143,8 @@ services:
       minio:
         condition: service_healthy
     volumes:
-      - ./secrets:/secrets:ro
+      - ./backend:/app
+      - ./evaluation:/app/evaluation:ro
     deploy:
       replicas: 3
       resources:
@@ -168,19 +157,16 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
-      args:
-        # Inlined into the browser bundle at build time.
-        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000/api/v1}
-    container_name: redteam-frontend-prod
     restart: unless-stopped
     environment:
+      - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL}
       - API_PROXY_TARGET=http://backend:8000/api/v1
     ports:
       - "3000:3000"
     depends_on:
       - backend
     deploy:
-      replicas: 1  # publishes host port 3000
+      replicas: 2
       resources:
         limits:
           memory: 1G

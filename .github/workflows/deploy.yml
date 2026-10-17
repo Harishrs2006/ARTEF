@@ -64,7 +64,10 @@ jobs:
       - name: Build and push Backend
         uses: docker/build-push-action@v5
         with:
-          context: ./backend
+          # The build context is the repository root because the backend
+          # Dockerfile copies the project metadata from the root and the
+          # application package from backend/app.
+          context: .
           file: ./backend/Dockerfile
           target: production
           push: true
@@ -105,7 +108,7 @@ jobs:
       - name: Build and push Worker
         uses: docker/build-push-action@v5
         with:
-          context: ./backend
+          context: .
           file: ./backend/Dockerfile
           target: production
           push: true
@@ -120,7 +123,7 @@ jobs:
           set -euo pipefail
           docker run -d --rm --name artef-backend-smoke -p 8000:8000 \
             -e SECRET_KEY=test-secret-key-1234567890 \
-            -e DATABASE_URL=sqlite:///tmp/artef-smoke.db \
+            -e DATABASE_URL=sqlite+aiosqlite:////tmp/artef-smoke.db \
             -e REDIS_URL=redis://host.docker.internal:6379/0 \
             -e CELERY_BROKER_URL=redis://host.docker.internal:6379/1 \
             -e CELERY_RESULT_BACKEND=redis://host.docker.internal:6379/2 \
@@ -131,9 +134,19 @@ jobs:
             -e S3_SECRET_KEY=test \
             -e S3_BUCKET=test-bucket \
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-backend:${{ github.event.inputs.version }}
-          sleep 20
-          curl -fsS http://127.0.0.1:8000/api/v1/health
-          docker stop artef-backend-smoke
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8000/api/v1/health; then
+              echo ""
+              echo "Backend health check passed"
+              docker stop artef-backend-smoke
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "Backend health check failed"
+          docker logs artef-backend-smoke
+          docker stop artef-backend-smoke || true
+          exit 1
 
   deploy-staging:
     name: Deploy to Staging

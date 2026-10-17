@@ -93,6 +93,3 @@ frontend/.turbo/
 ehthumbs.db
 Thumbs.db
 .aider*
-
-# TypeScript incremental build cache
-*.tsbuildinfo

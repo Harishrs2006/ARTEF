@@ -1,10 +1,10 @@
 [project]
 name = "agent-redteam-framework"
 version = "1.0.0"
-description = "Agent Red-Teaming & Evaluation Framework (ARTEF) — OJT Project by Nitesh Singh, 2026"
+description = "Agent Red-Teaming & Evaluation Framework (ARTEF) — OJT Project by Harish R S & Nitesh Singh, 2026"
 readme = "README.md"
 license = {text = "Proprietary — Copyright 2026 Nitesh Singh. All Rights Reserved."}
-authors = [{name = "Nitesh Singh"}]
+authors = [{name = "Harish R S"}, {name = "Nitesh Singh"}]
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.109.0",

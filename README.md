@@ -15,7 +15,7 @@
 [![Docker](https://img.shields.io/badge/Docker-Ready-2496ED.svg?style=for-the-badge&logo=docker&logoColor=white)](https://docker.com)
 
 [![Safety Gate](https://img.shields.io/badge/Safety%20Gate-Automated%20✓-brightgreen.svg?style=for-the-badge)](https://github.com/NETIZEN-11/ARTEF)
-[![Author](https://img.shields.io/badge/Author-Nitesh%20Singh-FF6B6B.svg?style=for-the-badge&logo=github)](https://github.com/BYTEZEN-11)
+[![Authors](https://img.shields.io/badge/Authors-Harish%20R%20S%20%26%20Nitesh%20Singh-FF6B6B.svg?style=for-the-badge&logo=github)](https://github.com/NETIZEN-11/ARTEF)
 [![License](https://img.shields.io/badge/License-Proprietary%20OJT-orange.svg?style=for-the-badge)](LICENSE)
 [![Year](https://img.shields.io/badge/Year-2026-8B5CF6.svg?style=for-the-badge)](https://github.com/NETIZEN-11/ARTEF)
 
@@ -538,22 +538,22 @@ not exercised by the automated tests.
 
 ## 👨‍💻 Project Scope & Authorship
 
-> This project was individually designed, developed, and documented as part of an **On-the-Job Training (OJT) Program**.
+> This project was designed, developed, and documented by a two-person team as part of an **On-the-Job Training (OJT) Program**.
 
 <div align="center">
 
 | Field | Detail |
 |:---|:---|
-| **Developer** | Nitesh Singh |
-| **GitHub** | [@BYTEZEN-11](https://github.com/BYTEZEN-11) |
-| **Project Type** | On-the-Job Training (OJT) — Individual Project |
+| **Developers** | Harish R S, Nitesh Singh |
+| **GitHub** | [@Harishrs2006](https://github.com/Harishrs2006), [@BYTEZEN-11](https://github.com/BYTEZEN-11) |
+| **Project Type** | On-the-Job Training (OJT) — Team Project |
 | **Project Title** | Agent Red-Teaming & Evaluation Framework (ARTEF) |
 | **Year** | 2026 |
 | **Scope** | Full-stack production system — FastAPI Backend, Next.js 14 Frontend, RBAC Auth, CI/CD Safety Gate, Human Review Queue, Adversarial Red-Teaming Engine |
 
 </div>
 
-> All design decisions, architecture choices, implementation, testing, and documentation were independently executed by **Nitesh Singh** as part of the OJT evaluation deliverable.
+> Design, implementation, testing, and documentation were carried out by **Harish R S** and **Nitesh Singh** as part of the OJT evaluation deliverable.
 
 ---
 
@@ -578,6 +578,7 @@ See [LICENSE](LICENSE) for full terms.
 *Copyright © 2026 **Nitesh Singh** — OJT Project: Agent Red-Teaming & Evaluation Framework*
 
 [![GitHub](https://img.shields.io/badge/GitHub-NETIZEN--11%2FARTEF-181717.svg?style=flat-square&logo=github)](https://github.com/NETIZEN-11/ARTEF)
+[![Author](https://img.shields.io/badge/Author-Harishrs2006-FF6B6B.svg?style=flat-square&logo=github)](https://github.com/Harishrs2006)
 [![Author](https://img.shields.io/badge/Author-BYTEZEN--11-FF6B6B.svg?style=flat-square&logo=github)](https://github.com/BYTEZEN-11)
 
 </div>

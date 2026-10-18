@@ -1,4 +1,6 @@
-﻿import os
+import base64
+import hashlib
+import os
 import types
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -9,22 +11,27 @@ from fastapi.security import OAuth2PasswordBearer, SecurityScopes
 
 if not hasattr(bcrypt, "__about__"):
     bcrypt.__about__ = types.SimpleNamespace(__version__="4.0.0")
-if not getattr(bcrypt, "_has_72_patch", False):
-    _orig_hashpw = bcrypt.hashpw
-    bcrypt.hashpw = lambda p, s: _orig_hashpw(p[:72], s)
-    _orig_checkpw = bcrypt.checkpw
-    bcrypt.checkpw = lambda p, s: _orig_checkpw(p[:72], s)
-    bcrypt._has_72_patch = True
 
 from jose import JWTError, jwt
-from passlib.context import CryptContext
 from pydantic import BaseModel
 
 from app.core.config import get_settings
 
 settings = get_settings()
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+# bcrypt silently ignores everything past 72 bytes. Truncating the password
+# would make two different passwords with a shared 72-byte prefix
+# interchangeable, so the password is pre-hashed with SHA-256 and base64
+# encoded first: the full entropy is preserved and the bcrypt input is always
+# 44 bytes.
+BCRYPT_MAX_BYTES = 72
+BCRYPT_ROUNDS = 12
+
+
+def _prepare_password(password: str) -> bytes:
+    """Return a fixed-length, entropy-preserving representation for bcrypt."""
+    digest = hashlib.sha256(password.encode("utf-8")).digest()
+    return base64.b64encode(digest)
 
 oauth2_scheme = OAuth2PasswordBearer(
     tokenUrl=f"{settings.API_V1_PREFIX}/auth/login",
@@ -56,12 +63,41 @@ class Token(BaseModel):
     expires_in: int
 
 
+def _bcrypt_verify(secret: bytes, hashed_password: str) -> bool:
+    """Verify a bcrypt hash, tolerating a malformed or empty stored hash."""
+    if not hashed_password:
+        return False
+    try:
+        return bcrypt.checkpw(secret, hashed_password.encode("utf-8"))
+    except (ValueError, TypeError):
+        return False
+
+
 def verify_password(plain_password: str, hashed_password: str) -> bool:
-    return pwd_context.verify(plain_password, hashed_password)
+    """Verify a password against a stored hash.
+
+    Hashes created before the SHA-256 pre-hashing change were computed over
+    the raw password. Both formats are accepted, and a successful legacy
+    verification is transparently upgraded by :func:`get_password_hash`.
+    """
+    if _bcrypt_verify(_prepare_password(plain_password), hashed_password):
+        return True
+    # Legacy format: the raw password was hashed directly.
+    raw = plain_password.encode("utf-8")
+    if len(raw) > BCRYPT_MAX_BYTES:
+        raw = raw[:BCRYPT_MAX_BYTES]
+    return _bcrypt_verify(raw, hashed_password)
+
+
+def needs_rehash(plain_password: str, hashed_password: str) -> bool:
+    """True when the stored hash uses the legacy (pre-hashing) format."""
+    return not _bcrypt_verify(_prepare_password(plain_password), hashed_password)
 
 
 def get_password_hash(password: str) -> str:
-    return pwd_context.hash(password)
+    return bcrypt.hashpw(
+        _prepare_password(password), bcrypt.gensalt(rounds=BCRYPT_ROUNDS)
+    ).decode("utf-8")
 
 
 def _default_key_path(key_name: str) -> str:
@@ -165,25 +201,37 @@ def create_refresh_token(data: dict[str, Any]) -> str:
     return jwt.encode(to_encode, private_key, algorithm=algorithm)
 
 
+def _decode_and_validate(token: str, expected_type: str) -> TokenData:
+    """Decode a JWT and validate its payload.
+
+    A structurally valid but semantically wrong token is an authentication
+    failure (401), not a server misconfiguration (500).
+    """
+    public_key, algorithm = load_public_key()
+    payload = jwt.decode(
+        token,
+        public_key,
+        algorithms=[algorithm],
+        options={"verify_aud": False},
+    )
+    if payload.get("type") != expected_type:
+        raise JWTError("Invalid token type")
+    try:
+        return TokenData(**payload)
+    except Exception as e:
+        raise JWTError("Invalid token payload") from e
+
+
 def decode_token(token: str) -> TokenData:
     try:
-        public_key, algorithm = load_public_key()
-        payload = jwt.decode(
-            token,
-            public_key,
-            algorithms=[algorithm],
-            options={"verify_aud": False},
-        )
-        if payload.get("type") != "access":
-            raise JWTError("Invalid token type")
-        return TokenData(**payload)
+        return _decode_and_validate(token, "access")
     except JWTError as e:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Could not validate credentials",
             headers={"WWW-Authenticate": "Bearer"},
         ) from e
-    except (ValueError, FileNotFoundError) as e:
+    except FileNotFoundError as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Server authentication configuration error",
@@ -192,23 +240,14 @@ def decode_token(token: str) -> TokenData:
 
 def decode_refresh_token(token: str) -> TokenData:
     try:
-        public_key, algorithm = load_public_key()
-        payload = jwt.decode(
-            token,
-            public_key,
-            algorithms=[algorithm],
-            options={"verify_aud": False},
-        )
-        if payload.get("type") != "refresh":
-            raise JWTError("Invalid token type")
-        return TokenData(**payload)
+        return _decode_and_validate(token, "refresh")
     except JWTError as e:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Could not validate refresh token",
             headers={"WWW-Authenticate": "Bearer"},
         ) from e
-    except (ValueError, FileNotFoundError) as e:
+    except FileNotFoundError as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Server authentication configuration error",
@@ -277,3 +316,26 @@ def get_scopes_for_roles(roles: list[str]) -> list[str]:
     for role in roles:
         scopes.update(ROLE_SCOPES.get(role, []))
     return list(scopes)
+
+
+def resolve_user_roles(user: Any) -> list[str]:
+    """Resolve the effective role names of a user.
+
+    A user may carry no role at all - for example an account created through
+    ``/auth/register`` before any role was assigned, or a bootstrap admin
+    flagged only with ``is_superuser``. Without a role the token carried an
+    empty scope list, and every protected endpoint answered 403, which locked
+    the user out of the console they had just signed in to.
+
+    Superusers therefore fall back to the ``admin`` role, and a user without
+    any role falls back to ``viewer`` so that the console remains reachable
+    in a read-only capacity instead of failing every request.
+    """
+    roles = [role.name for role in getattr(user, "roles", None) or []]
+
+    if not roles and getattr(user, "is_superuser", False):
+        roles = ["admin"]
+    if not roles:
+        roles = ["viewer"]
+
+    return roles

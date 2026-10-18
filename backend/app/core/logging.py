@@ -36,6 +36,12 @@ def add_service_info(
 def filter_sensitive_data(
     logger: structlog.BoundLogger, method_name: str, event_dict: EventDict
 ) -> EventDict:
+    """Redact secrets from the log event.
+
+    Matching happens on the key name *and* on the value: a secret nested
+    inside a payload (``{"headers": {"Authorization": "Bearer ..."}}``) is not
+    covered by key-name matching alone.
+    """
     sensitive_keys = {
         "password",
         "secret",
@@ -50,19 +56,44 @@ def filter_sensitive_data(
         "bearer",
         "access_token",
         "refresh_token",
+        "auth_config",
+        "request_body",
+        "prompt",
+        "response",
     }
+
+    def _is_sensitive(key: str) -> bool:
+        lowered = key.lower()
+        return any(sensitive in lowered for sensitive in sensitive_keys)
+
+    def _redact_value(value):
+        if isinstance(value, dict):
+            return {k: ("***REDACTED***" if _is_sensitive(k) else _redact_value(v)) for k, v in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [_redact_value(v) for v in value]
+        if isinstance(value, str) and len(value) > 1000:
+            return value[:1000] + "... [truncated]"
+        return value
+
     filtered = {}
     for key, value in event_dict.items():
-        if any(sensitive in key.lower() for sensitive in sensitive_keys):
+        if _is_sensitive(key):
             filtered[key] = "***REDACTED***"
-        elif isinstance(value, str) and len(value) > 1000:
-            filtered[key] = value[:1000] + "... [truncated]"
         else:
-            filtered[key] = value
+            filtered[key] = _redact_value(value)
     return filtered
 
 
 def setup_logging() -> None:
+    """Configure structlog.
+
+    This is called at import time of ``app.core.logging`` (and again from the
+    application lifespan) so that loggers created during module import are
+    bound to the configured processors. With
+    ``cache_logger_on_first_use=True`` a logger that is created before
+    ``setup_logging()`` runs would otherwise keep the default configuration
+    for its whole lifetime.
+    """
     processors: list[Processor] = [
         structlog.contextvars.merge_contextvars,
         structlog.stdlib.add_logger_name,
@@ -84,7 +115,7 @@ def setup_logging() -> None:
         processors=processors,
         wrapper_class=structlog.stdlib.BoundLogger,
         logger_factory=structlog.stdlib.LoggerFactory(),
-        cache_logger_on_first_use=True,
+        cache_logger_on_first_use=False,
     )
 
     import logging
@@ -94,6 +125,9 @@ def setup_logging() -> None:
         stream=sys.stdout,
         level=getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO),
     )
+
+
+setup_logging()
 
 
 def get_logger(name: str) -> structlog.BoundLogger:

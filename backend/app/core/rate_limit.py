@@ -1,4 +1,4 @@
-﻿import time
+import time
 from functools import wraps
 
 from fastapi import HTTPException, Request, status
@@ -89,6 +89,15 @@ class RedisRateLimiter:
 
 
 class RateLimiter:
+    """In-process sliding-window limiter.
+
+    Used outside production (single-process deployments and tests). The key
+    space is bounded so that an attacker rotating paths or source addresses
+    cannot grow the dictionary without limit.
+    """
+
+    MAX_KEYS = 10_000
+
     def __init__(self):
         self._windows: dict[str, list[float]] = {}
         self._cleanup_interval = 60
@@ -103,6 +112,13 @@ class RateLimiter:
                 if not self._windows[key]:
                     del self._windows[key]
             self._last_cleanup = now
+
+        # Bound the key space: drop the oldest keys when the limit is reached.
+        if len(self._windows) > self.MAX_KEYS:
+            overflow = len(self._windows) - self.MAX_KEYS
+            oldest = sorted(self._windows, key=lambda k: self._windows[k][-1] if self._windows[k] else 0)
+            for key in oldest[:overflow]:
+                del self._windows[key]
 
     def check_rate_limit(
         self, key: str, limit: int = None, window: int = None
@@ -155,7 +171,17 @@ class InMemoryRateLimiter(RateLimiter):
 rate_limiter = RedisRateLimiter() if settings.is_production else InMemoryRateLimiter()
 
 
-TRUSTED_PROXY_IPS = {"127.0.0.1", "::1"}  # Add your load balancer IPs here
+def _trusted_proxy_ips() -> set[str]:
+    """Proxy addresses whose X-Forwarded-For header may be trusted.
+
+    Configured through ``TRUSTED_PROXY_IPS``; the default covers loopback
+    only, which is correct for a local development server. In a container
+    deployment the real proxy addresses must be configured explicitly,
+    otherwise every request is attributed to the proxy and the limit becomes
+    global.
+    """
+    configured = settings.TRUSTED_PROXY_IPS
+    return {ip.strip() for ip in configured.split(",") if ip.strip()}
 
 
 def _get_client_ip(request: Request) -> str:
@@ -165,7 +191,7 @@ def _get_client_ip(request: Request) -> str:
     """
     client_ip = request.client.host if request.client else "unknown"
 
-    if client_ip in TRUSTED_PROXY_IPS:
+    if client_ip in _trusted_proxy_ips():
         xff = request.headers.get("x-forwarded-for")
         if xff:
             ips = [ip.strip() for ip in xff.split(",")]
@@ -220,8 +246,13 @@ def rate_limit(limit: int = None, window: int = None):
             )
             if request:
                 client_ip = _get_client_ip(request)
-                key = f"ratelimit:{client_ip}:{request.url.path}"
-                allowed, current, retry_after = rate_limiter.check_rate_limit(key, limit, window)
+                key = f"{client_ip}:{request.url.path}"
+                # `check_rate_limit` is a coroutine on both limiter
+                # implementations; without `await` the result was a coroutine
+                # object, which is always truthy, so the limit never applied.
+                allowed, current, retry_after = await rate_limiter.check_rate_limit(
+                    key, limit, window
+                )
                 if not allowed:
                     raise HTTPException(
                         status_code=status.HTTP_429_TOO_MANY_REQUESTS,

@@ -1,4 +1,4 @@
-﻿"""Circuit Breaker pattern implementation for external provider failures."""
+"""Circuit Breaker pattern implementation for external provider failures."""
 
 import asyncio
 from collections.abc import Callable

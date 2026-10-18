@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python
+#!/usr/bin/env python
 """
 ARTEF Critical Issues Fix Script
 Automatically fixes identified critical and high-priority issues.

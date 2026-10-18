@@ -19,25 +19,24 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.domain.enums import RegressionType, SeverityLevel, Verdict
-from app.models.types import UUIDString
 from app.models.user import Base
 
 
 class Regression(Base):
     __tablename__ = "regressions"
 
-    id: Mapped[String] = mapped_column(UUIDString(), primary_key=True, default=lambda: str(uuid4()))
+    id: Mapped[String] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
     run_id: Mapped[String] = mapped_column(
-        UUIDString(), ForeignKey("runs.id", ondelete="CASCADE"), nullable=False, index=True
+        String(36), ForeignKey("runs.id", ondelete="CASCADE"), nullable=False, index=True
     )
     baseline_id: Mapped[String] = mapped_column(
-        UUIDString(),
+        String(36),
         ForeignKey("baselines.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
     test_case_id: Mapped[String] = mapped_column(
-        UUIDString(),
+        String(36),
         ForeignKey("test_cases.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
@@ -63,7 +62,7 @@ class Regression(Base):
     evidence: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list, nullable=False)
     acknowledged: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     acknowledged_by: Mapped[String | None] = mapped_column(
-        UUIDString(), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
     acknowledged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
@@ -92,9 +91,9 @@ class Regression(Base):
 class SeverityFinding(Base):
     __tablename__ = "severity_findings"
 
-    id: Mapped[String] = mapped_column(UUIDString(), primary_key=True, default=lambda: str(uuid4()))
+    id: Mapped[String] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
     regression_id: Mapped[String] = mapped_column(
-        UUIDString(),
+        String(36),
         ForeignKey("regressions.id", ondelete="CASCADE"),
         nullable=False,
         index=True,

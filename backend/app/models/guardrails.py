@@ -16,7 +16,6 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.models.types import UUIDString
 from app.models.user import Base
 
 
@@ -48,7 +47,7 @@ class GuardrailStatus(str, Enum):
 class Guardrail(Base):
     __tablename__ = "guardrails"
 
-    id: Mapped[String] = mapped_column(UUIDString(), primary_key=True, default=lambda: str(uuid4()))
+    id: Mapped[String] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     guardrail_type: Mapped[GuardrailType] = mapped_column(SQLEnum(GuardrailType), nullable=False)
@@ -64,8 +63,10 @@ class Guardrail(Base):
 class GuardrailFinding(Base):
     __tablename__ = "guardrail_findings"
 
-    id: Mapped[String] = mapped_column(UUIDString(), primary_key=True, default=lambda: str(uuid4()))
-    guardrail_id: Mapped[String] = mapped_column(UUIDString(), ForeignKey("guardrails.id"), nullable=False)
+    id: Mapped[String] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    guardrail_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("guardrails.id", ondelete="CASCADE"), nullable=False, index=True
+    )
     test_case_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     input_text: Mapped[str] = mapped_column(Text, nullable=False)
     output_text: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -79,7 +80,7 @@ class GuardrailFinding(Base):
 class GuardrailConfig(Base):
     __tablename__ = "guardrail_configs"
 
-    id: Mapped[String] = mapped_column(UUIDString(), primary_key=True, default=lambda: str(uuid4()))
+    id: Mapped[String] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     guardrail_type: Mapped[GuardrailType] = mapped_column(SQLEnum(GuardrailType), nullable=False)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)

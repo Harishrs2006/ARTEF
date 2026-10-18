@@ -15,14 +15,13 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from app.models.types import UUIDString
 from app.models.user import Base
 
 
 class FeatureFlag(Base):
     __tablename__ = "feature_flags"
 
-    id: Mapped[String] = mapped_column(UUIDString(), primary_key=True, default=lambda: str(uuid4()))
+    id: Mapped[String] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
     name: Mapped[str] = mapped_column(String(100), unique=True, nullable=False, index=True)
     enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False)
@@ -46,9 +45,9 @@ class FeatureFlag(Base):
 class Notification(Base):
     __tablename__ = "notifications"
 
-    id: Mapped[String] = mapped_column(UUIDString(), primary_key=True, default=lambda: str(uuid4()))
+    id: Mapped[String] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
     user_id: Mapped[String] = mapped_column(
-        UUIDString(),
+        String(36),
         ForeignKey("users.id", ondelete="CASCADE"),
         nullable=False,
         index=True,

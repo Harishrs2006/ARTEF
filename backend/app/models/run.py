@@ -21,7 +21,6 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.domain.enums import ExecutionStatus, ExpectedBehaviorType, RunStatus, Verdict
-from app.models.types import UUIDString
 from app.models.user import Base
 
 if TYPE_CHECKING:
@@ -36,28 +35,28 @@ if TYPE_CHECKING:
 class Run(Base):
     __tablename__ = "runs"
 
-    id: Mapped[String] = mapped_column(UUIDString(), primary_key=True, default=lambda: str(uuid4()))
+    id: Mapped[String] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
     target_agent_id: Mapped[String] = mapped_column(
-        UUIDString(),
+        String(36),
         ForeignKey("target_agents.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
     suite_id: Mapped[String] = mapped_column(
-        UUIDString(),
+        String(36),
         ForeignKey("test_suites.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
     suite_version: Mapped[int] = mapped_column(Integer, nullable=False)
     baseline_id: Mapped[String | None] = mapped_column(
-        UUIDString(),
+        String(36),
         ForeignKey("baselines.id", ondelete="SET NULL"),
         nullable=True,
         index=True,
     )
     matrix_id: Mapped[String | None] = mapped_column(
-        UUIDString(),
+        String(36),
         ForeignKey("evaluation_matrices.id", ondelete="SET NULL"),
         nullable=True,
         index=True,
@@ -86,9 +85,6 @@ class Run(Base):
     total_cost_usd: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
     total_latency_ms: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
-    # CI gate outcome (GateDecision value: PASS/WARN/FAIL/BLOCK); None until the gate has run.
-    gate_decision: Mapped[str | None] = mapped_column(String(16), nullable=True, index=True)
-    gate_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -96,7 +92,7 @@ class Run(Base):
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
     )
     created_by: Mapped[String | None] = mapped_column(
-        UUIDString(), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
 
     target_agent: Mapped["TargetAgent"] = relationship(back_populates="runs", lazy="joined")
@@ -125,12 +121,12 @@ class Run(Base):
 class Execution(Base):
     __tablename__ = "executions"
 
-    id: Mapped[String] = mapped_column(UUIDString(), primary_key=True, default=lambda: str(uuid4()))
+    id: Mapped[String] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
     run_id: Mapped[String] = mapped_column(
-        UUIDString(), ForeignKey("runs.id", ondelete="CASCADE"), nullable=False, index=True
+        String(36), ForeignKey("runs.id", ondelete="CASCADE"), nullable=False, index=True
     )
     test_case_id: Mapped[String] = mapped_column(
-        UUIDString(),
+        String(36),
         ForeignKey("test_cases.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
@@ -169,19 +165,19 @@ class Execution(Base):
 class Result(Base):
     __tablename__ = "results"
 
-    id: Mapped[String] = mapped_column(UUIDString(), primary_key=True, default=lambda: str(uuid4()))
+    id: Mapped[String] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
     execution_id: Mapped[String] = mapped_column(
-        UUIDString(),
+        String(36),
         ForeignKey("executions.id", ondelete="CASCADE"),
         nullable=False,
         unique=True,
         index=True,
     )
     run_id: Mapped[String] = mapped_column(
-        UUIDString(), ForeignKey("runs.id", ondelete="CASCADE"), nullable=False, index=True
+        String(36), ForeignKey("runs.id", ondelete="CASCADE"), nullable=False, index=True
     )
     test_case_id: Mapped[String] = mapped_column(
-        UUIDString(),
+        String(36),
         ForeignKey("test_cases.id", ondelete="CASCADE"),
         nullable=False,
         index=True,

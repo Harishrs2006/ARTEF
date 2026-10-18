@@ -19,7 +19,6 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.domain.enums import AgentStatus
-from app.models.types import UUIDString
 from app.models.user import Base
 
 if TYPE_CHECKING:
@@ -29,7 +28,7 @@ if TYPE_CHECKING:
 class TargetAgent(Base):
     __tablename__ = "target_agents"
 
-    id: Mapped[String] = mapped_column(UUIDString(), primary_key=True, default=lambda: str(uuid4()))
+    id: Mapped[String] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
     name: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     endpoint_url: Mapped[str] = mapped_column(String(500), nullable=False)
@@ -55,7 +54,7 @@ class TargetAgent(Base):
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
     )
     created_by: Mapped[String | None] = mapped_column(
-        UUIDString(), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
 
     runs: Mapped[list["Run"]] = relationship(back_populates="target_agent", lazy="dynamic")

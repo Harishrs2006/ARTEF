@@ -18,22 +18,23 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.domain.enums import ReviewLabel, ReviewStatus, SeverityLevel
-from app.models.types import UUIDString
 from app.models.user import Base
 
 
 class ReviewQueue(Base):
     __tablename__ = "review_queue"
 
-    id: Mapped[String] = mapped_column(UUIDString(), primary_key=True, default=lambda: str(uuid4()))
+    id: Mapped[String] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
     regression_id: Mapped[String] = mapped_column(
-        UUIDString(),
-        ForeignKey("regressions.id", ondelete="CASCADE"),
+        String(36),
+        # RESTRICT: deleting a regression must not silently destroy the
+        # review-queue entry and its labels.
+        ForeignKey("regressions.id", ondelete="RESTRICT"),
         nullable=False,
         index=True,
     )
     run_id: Mapped[String] = mapped_column(
-        UUIDString(), ForeignKey("runs.id", ondelete="CASCADE"), nullable=False, index=True
+        String(36), ForeignKey("runs.id", ondelete="CASCADE"), nullable=False, index=True
     )
     severity: Mapped[SeverityLevel] = mapped_column(
         SQLEnum(SeverityLevel, native_enum=False, create_constraint=True),
@@ -49,7 +50,7 @@ class ReviewQueue(Base):
         index=True,
     )
     assigned_to: Mapped[String | None] = mapped_column(
-        UUIDString(),
+        String(36),
         ForeignKey("users.id", ondelete="SET NULL"),
         nullable=True,
         index=True,
@@ -84,9 +85,9 @@ class ReviewQueue(Base):
 class ReviewLabelRecord(Base):
     __tablename__ = "review_labels"
 
-    id: Mapped[String] = mapped_column(UUIDString(), primary_key=True, default=lambda: str(uuid4()))
+    id: Mapped[String] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
     review_id: Mapped[String] = mapped_column(
-        UUIDString(),
+        String(36),
         ForeignKey("review_queue.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
@@ -95,8 +96,10 @@ class ReviewLabelRecord(Base):
         SQLEnum(ReviewLabel, native_enum=False, create_constraint=True),
         nullable=False,
     )
+    # RESTRICT instead of CASCADE: deleting a user must not erase the
+    # audit trail of which findings were labelled by whom.
     reviewer_id: Mapped[String] = mapped_column(
-        UUIDString(), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+        String(36), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False
     )
     rationale: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(

@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """Run seeded regression benchmark to validate the framework."""
 
 import app.core.sqlite_compat  # noqa: F401

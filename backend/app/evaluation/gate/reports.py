@@ -1,4 +1,4 @@
-﻿"""CI/CD Gate Reports - JUnit XML and JSON output for CI systems."""
+"""CI/CD Gate Reports - JUnit XML and JSON output for CI systems."""
 
 import json
 import xml.etree.ElementTree as ET

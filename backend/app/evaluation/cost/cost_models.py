@@ -19,8 +19,8 @@ class CostCategory(str, Enum):
 @dataclass
 class CostEntry:
     id: UUID = field(default_factory=uuid4)
-    run_id: UUID | None = None
-    test_case_id: UUID | None = None
+    run_id: UUID | str | None = None
+    test_case_id: UUID | str | None = None
     category: CostCategory = CostCategory.LLM_INFERENCE
     provider: str = ""
     model: str = ""
@@ -49,7 +49,7 @@ class CostSummary:
 
 @dataclass
 class CostBreakdown:
-    run_id: UUID
+    run_id: UUID | str
     run_name: str
     total_cost_usd: float
     entries: list[dict[str, Any]] = field(default_factory=list)

@@ -1,7 +1,8 @@
-from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID, uuid4
+
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.core.database import get_async_session
@@ -19,9 +20,14 @@ logger = get_logger(__name__)
 
 
 class CostTracker:
-    def __init__(self, session: Any = None):
-        # With a session, entries join the caller's transaction (no separate commit). Without
-        # one, each entry is written and committed in its own session.
+    def __init__(self, session: AsyncSession | None = None):
+        """Create a cost tracker.
+
+        When a session is supplied the cost entries join the caller's
+        transaction, so a rolled-back run does not leave committed cost rows
+        behind. Without a session the tracker opens its own short-lived
+        session, which is only appropriate for standalone usage.
+        """
         self.session = session
         self.pricing = {
             "openai": {
@@ -59,26 +65,33 @@ class CostTracker:
         input_tokens: int,
         output_tokens: int,
     ) -> float:
-        provider = provider.lower()
-        model_key = model.lower()
+        provider = (provider or "").lower()
+        model_key = (model or "").lower()
 
-        if provider in self.pricing:
-            if model_key in self.pricing[provider]:
-                pricing = self.pricing[provider][model_key]
+        if provider in self.pricing and model_key:
+            table = self.pricing[provider]
+            pricing = table.get(model_key)
+            if pricing is None:
+                base_model = model_key.split("-202")[0].split("-20")[0]
+                pricing = table.get(base_model)
+            if pricing is None:
+                # Only match when the configured model is a prefix of the
+                # requested one. The reverse (a short requested name that
+                # prefixes a longer configured name) priced an unknown model
+                # as an unrelated one, and the dict iteration order made the
+                # resulting price non-deterministic.
+                candidates = [
+                    (key, value)
+                    for key, value in table.items()
+                    if model_key.startswith(key)
+                ]
+                if candidates:
+                    # Longest matching prefix wins.
+                    pricing = max(candidates, key=lambda item: len(item[0]))[1]
+            if pricing is not None:
                 input_cost = (input_tokens / 1000) * pricing.get("input", 0)
                 output_cost = (output_tokens / 1000) * pricing.get("output", 0)
                 return input_cost + output_cost
-            base_model = model_key.split("-202")[0].split("-20")[0]
-            if base_model in self.pricing[provider]:
-                pricing = self.pricing[provider][base_model]
-                input_cost = (input_tokens / 1000) * pricing.get("input", 0)
-                output_cost = (output_tokens / 1000) * pricing.get("output", 0)
-                return input_cost + output_cost
-            for key, pricing in self.pricing[provider].items():
-                if model_key.startswith(key) or key.startswith(model_key):
-                    input_cost = (input_tokens / 1000) * pricing.get("input", 0)
-                    output_cost = (output_tokens / 1000) * pricing.get("output", 0)
-                    return input_cost + output_cost
 
         logger.warning("cost_unknown_model", provider=provider, model=model)
         return 0.0
@@ -90,8 +103,8 @@ class CostTracker:
         model: str,
         input_tokens: int,
         output_tokens: int,
-        run_id: UUID = None,
-        test_case_id: UUID = None,
+        run_id: UUID | str | None = None,
+        test_case_id: UUID | str | None = None,
         metadata: dict[str, Any] = None,
     ) -> CostEntry:
         cost_usd = self.calculate_cost(provider, model, input_tokens, output_tokens)
@@ -120,7 +133,7 @@ class CostTracker:
             cost_usd=cost_usd,
         )
 
-        async with self._entry_session() as session:
+        async def _persist(session: AsyncSession) -> None:
             db_entry = CostEntryModel(
                 id=entry.id,
                 run_id=entry.run_id,
@@ -139,7 +152,7 @@ class CostTracker:
 
             trend = CostTrendModel(
                 id=uuid4(),
-                date=datetime.utcnow(),
+                date=datetime.now(UTC),
                 cost_usd=entry.cost_usd,
                 token_count=entry.total_tokens,
                 request_count=1,
@@ -149,23 +162,17 @@ class CostTracker:
                 category=entry.category.value,
             )
             session.add(trend)
+            await session.flush()
 
-            if self.session is None:
-                await session.commit()
-            else:
-                await session.flush()
+        if self.session is not None:
+            # Join the caller's transaction: the cost rows are committed
+            # together with the run they describe.
+            await _persist(self.session)
+        else:
+            async with get_async_session() as session:
+                await _persist(session)
 
         return entry
-
-    def _entry_session(self):
-        if self.session is None:
-            return get_async_session()
-
-        @asynccontextmanager
-        async def shared():
-            yield self.session
-
-        return shared()
 
     def check_limits(
         self,
@@ -184,76 +191,80 @@ class CostTracker:
         end_time: datetime,
         run_ids: list[UUID] = None,
     ) -> CostSummary:
-        async with get_async_session() as session:
-            from sqlalchemy import and_, func, select
+        from sqlalchemy import and_, func, select
 
-            query = select(
-                func.sum(CostEntryModel.cost_usd).label("total_cost"),
-                func.sum(CostEntryModel.input_tokens).label("total_input"),
-                func.sum(CostEntryModel.output_tokens).label("total_output"),
-                func.sum(CostEntryModel.total_tokens).label("total_tokens"),
-            ).where(
-                and_(
-                    CostEntryModel.created_at >= start_time,
-                    CostEntryModel.created_at <= end_time,
-                )
+        # The ``run_ids`` filter has to be applied to every breakdown query
+        # as well as to the total. Previously only the total was filtered, so
+        # the breakdowns contained every run in the period and did not sum to
+        # the reported total.
+        period = and_(
+            CostEntryModel.created_at >= start_time,
+            CostEntryModel.created_at <= end_time,
+        )
+        run_filter = CostEntryModel.run_id.in_([str(r) for r in run_ids]) if run_ids else None
+
+        def _scope(stmt):
+            if run_filter is not None:
+                stmt = stmt.where(run_filter)
+            return stmt
+
+        async def _run() -> CostSummary:
+            query = _scope(
+                select(
+                    func.sum(CostEntryModel.cost_usd).label("total_cost"),
+                    func.sum(CostEntryModel.input_tokens).label("total_input"),
+                    func.sum(CostEntryModel.output_tokens).label("total_output"),
+                    func.sum(CostEntryModel.total_tokens).label("total_tokens"),
+                ).where(period)
             )
-
-            if run_ids:
-                query = query.where(CostEntryModel.run_id.in_(run_ids))
-
             result = await session.execute(query)
             row = result.one()
 
-            by_category_q = select(
-                CostEntryModel.category,
-                func.sum(CostEntryModel.cost_usd).label("cost"),
-            ).where(
-                and_(
-                    CostEntryModel.created_at >= start_time,
-                    CostEntryModel.created_at <= end_time,
+            by_category_q = _scope(
+                select(
+                    CostEntryModel.category,
+                    func.sum(CostEntryModel.cost_usd).label("cost"),
                 )
-            ).group_by(CostEntryModel.category)
+                .where(period)
+                .group_by(CostEntryModel.category)
+            )
 
-            by_provider_q = select(
-                CostEntryModel.provider,
-                func.sum(CostEntryModel.cost_usd).label("cost"),
-            ).where(
-                and_(
-                    CostEntryModel.created_at >= start_time,
-                    CostEntryModel.created_at <= end_time,
+            by_provider_q = _scope(
+                select(
+                    CostEntryModel.provider,
+                    func.sum(CostEntryModel.cost_usd).label("cost"),
                 )
-            ).group_by(CostEntryModel.provider)
+                .where(period)
+                .group_by(CostEntryModel.provider)
+            )
 
-            by_model_q = select(
-                CostEntryModel.model,
-                func.sum(CostEntryModel.cost_usd).label("cost"),
-            ).where(
-                and_(
-                    CostEntryModel.created_at >= start_time,
-                    CostEntryModel.created_at <= end_time,
+            by_model_q = _scope(
+                select(
+                    CostEntryModel.model,
+                    func.sum(CostEntryModel.cost_usd).label("cost"),
                 )
-            ).group_by(CostEntryModel.model)
+                .where(period)
+                .group_by(CostEntryModel.model)
+            )
 
-            by_run_q = select(
-                CostEntryModel.run_id,
-                func.sum(CostEntryModel.cost_usd).label("cost"),
-            ).where(
-                and_(
-                    CostEntryModel.created_at >= start_time,
-                    CostEntryModel.created_at <= end_time,
+            by_run_q = _scope(
+                select(
+                    CostEntryModel.run_id,
+                    func.sum(CostEntryModel.cost_usd).label("cost"),
                 )
-            ).group_by(CostEntryModel.run_id)
+                .where(period)
+                .group_by(CostEntryModel.run_id)
+            )
 
             by_category_res = await session.execute(by_category_q)
             by_provider_res = await session.execute(by_provider_q)
             by_model_res = await session.execute(by_model_q)
             by_run_res = await session.execute(by_run_q)
 
-            by_category = {row.category: float(row.cost or 0) for row in by_category_res}
-            by_provider = {row.provider: float(row.cost or 0) for row in by_provider_res}
-            by_model = {row.model: float(row.cost or 0) for row in by_model_res}
-            by_run = {str(row.run_id): float(row.cost or 0) for row in by_run_res if row.run_id}
+            by_category = {r.category: float(r.cost or 0) for r in by_category_res}
+            by_provider = {r.provider: float(r.cost or 0) for r in by_provider_res}
+            by_model = {r.model: float(r.cost or 0) for r in by_model_res}
+            by_run = {str(r.run_id): float(r.cost or 0) for r in by_run_res if r.run_id}
 
             return CostSummary(
                 total_cost_usd=float(row.total_cost or 0),
@@ -268,13 +279,18 @@ class CostTracker:
                 period_end=end_time,
             )
 
-    async def get_breakdown(self, run_id: UUID) -> CostBreakdown:
+        if self.session is not None:
+            return await _run()
         async with get_async_session() as session:
-            from sqlalchemy import select
+            return await _run()
 
+    async def get_breakdown(self, run_id: UUID) -> CostBreakdown:
+        from sqlalchemy import select
+
+        async def _run() -> CostBreakdown:
             query = select(CostEntryModel).where(CostEntryModel.run_id == run_id)
             result = await session.execute(query)
-            entries = result.scalars().all()
+            entries = list(result.scalars().all())
 
             total_cost = sum(e.cost_usd for e in entries)
             entries_data = [
@@ -287,19 +303,39 @@ class CostTracker:
                     "output_tokens": e.output_tokens,
                     "total_tokens": e.total_tokens,
                     "cost_usd": e.cost_usd,
-                    "created_at": e.created_at.isoformat(),
+                    "created_at": e.created_at.isoformat() if e.created_at else None,
                 }
                 for e in entries
             ]
 
+            # The reported window is the actual period covered by the
+            # entries, not "now". The previous implementation returned
+            # start_time == end_time == utcnow() and an empty run name.
+            created = [e.created_at for e in entries if e.created_at is not None]
+            start_time = min(created) if created else datetime.now(UTC)
+            end_time = max(created) if created else datetime.now(UTC)
+
+            run_name = ""
+            from app.models.run import Run
+
+            run_row = await session.execute(select(Run).where(Run.id == str(run_id)))
+            run = run_row.scalar_one_or_none()
+            if run is not None:
+                run_name = f"Run {str(run.id)[:8]}"
+
             return CostBreakdown(
                 run_id=run_id,
-                run_name="",
+                run_name=run_name,
                 total_cost_usd=total_cost,
                 entries=entries_data,
-                start_time=datetime.utcnow(),
-                end_time=datetime.utcnow(),
+                start_time=start_time,
+                end_time=end_time,
             )
+
+        if self.session is not None:
+            return await _run()
+        async with get_async_session() as session:
+            return await _run()
 
     async def record_trend(
         self,
@@ -310,12 +346,14 @@ class CostTracker:
         cost_usd: float = 0.0,
         token_count: int = 0,
     ) -> None:
-        async with get_async_session() as session:
+        async def _persist(session: AsyncSession) -> None:
             trend = CostTrendModel(
                 id=uuid4(),
-                date=datetime.utcnow(),
+                date=datetime.now(UTC),
                 cost_usd=cost_usd,
-                token_count=0,
+                # The argument was previously ignored and always written as 0,
+                # so every token-based trend chart was empty.
+                token_count=token_count,
                 request_count=1,
                 run_id=run_id,
                 provider=provider,
@@ -323,4 +361,10 @@ class CostTracker:
                 category=category.value,
             )
             session.add(trend)
-            await session.commit()
+            await session.flush()
+
+        if self.session is not None:
+            await _persist(self.session)
+            return
+        async with get_async_session() as session:
+            await _persist(session)

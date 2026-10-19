@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """Run an evaluation from the command line."""
 
 import argparse
@@ -15,7 +15,7 @@ from app.evaluation.regression.detector import RegressionDetector
 from app.evaluation.severity.classifier import SeverityClassifier
 from app.models.run import Run
 from app.repositories.agents import TargetAgentRepository
-from app.repositories.baselines import BaselineRepository, RegressionRepository
+from app.repositories.baselines import BaselineRepository
 from app.repositories.runs import ExecutionRepository, ResultRepository, RunRepository
 from app.repositories.suites import TestSuiteRepository
 from app.services.execution_service import ExecutionService

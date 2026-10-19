@@ -1,7 +1,7 @@
-﻿from datetime import datetime
+from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.domain.enums import (
     ExpectedBehaviorType,
@@ -85,14 +85,19 @@ class JudgeOutput(BaseModel):
     rationale: str = Field(min_length=1)
     evidence: list[EvidenceItem] = Field(default_factory=list)
     criteria_results: list[CriteriaResult] = Field(default_factory=list)
+    # Provider provenance (tokens, cost, model, provider id). Declared
+    # explicitly so it survives validation instead of being silently dropped
+    # by Pydantic's default "ignore extra" behaviour.
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
-    @field_validator("evidence")
-    @classmethod
-    def validate_evidence_not_empty(cls, v: list[EvidenceItem], info) -> list[EvidenceItem]:
-        verdict = info.data.get("verdict")
-        if verdict in (Verdict.PASS, Verdict.FAIL) and not v:
-            raise ValueError(f"Evidence list cannot be empty for {verdict} verdict")
-        return v
+    @model_validator(mode="after")
+    def validate_evidence_not_empty(self) -> "JudgeOutput":
+        # A field_validator on ``evidence`` never runs when the field is
+        # omitted (Pydantic skips validators for unset defaulted fields), so
+        # the rule is enforced here where ``verdict`` is always available.
+        if self.verdict in (Verdict.PASS, Verdict.FAIL) and not self.evidence:
+            raise ValueError(f"Evidence list cannot be empty for {self.verdict} verdict")
+        return self
 
     @field_validator("criteria_results")
     @classmethod
@@ -127,7 +132,6 @@ class RegressionFinding(BaseModel):
     evidence: list[EvidenceItem] = Field(default_factory=list)
     baseline_run_id: str
     current_run_id: str
-    regression_id: str | None = None  # id of the persisted Regression row, once saved
 
 
 class SeverityClassification(BaseModel):

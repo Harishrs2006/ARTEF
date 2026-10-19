@@ -1,8 +1,8 @@
-﻿from datetime import datetime
+from datetime import datetime
 from typing import Any
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.domain.enums import RunStatus
 
@@ -11,7 +11,7 @@ class MatrixConfiguration(BaseModel):
     """Configuration for a single evaluation cell.
     
     Supports the full ARTEF evaluation matrix:
-    Test Case Ã— Model Ã— Prompt Version Ã— Provider Ã— Dataset
+    Test Case × Model × Prompt Version × Provider × Dataset
     """
     model_id: str
     model_provider: str
@@ -37,7 +37,9 @@ class MatrixConfiguration(BaseModel):
 
 
 class EvaluationCell(BaseModel):
-    """A single cell in the evaluation matrix: TestCase Ã— Configuration."""
+    """A single cell in the evaluation matrix: TestCase × Configuration."""
+    model_config = ConfigDict(from_attributes=True)
+
     id: UUID = Field(default_factory=uuid4)
     matrix_id: UUID
     test_case_id: UUID
@@ -53,6 +55,8 @@ class EvaluationCell(BaseModel):
 
 class EvaluationMatrix(BaseModel):
     """Evaluation matrix combining test cases with configurations."""
+    model_config = ConfigDict(from_attributes=True)
+
     id: UUID = Field(default_factory=uuid4)
     name: str
     description: str | None = None

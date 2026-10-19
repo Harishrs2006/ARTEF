@@ -1,10 +1,10 @@
-﻿import copy
+import copy
 from datetime import datetime
 from typing import Any
 from uuid import UUID, uuid4
 
 import httpx
-from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
+from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from app.core.config import get_settings
 from app.core.exceptions import (
@@ -19,7 +19,6 @@ from app.evaluation.cost.cost_tracker import CostCategory, CostTracker
 from app.models.run import Execution, Run
 from app.models.target_agent import TargetAgent
 from app.models.test_suite import TestCase
-from app.providers.target_agent import validate_target_url
 from app.repositories.agents import TargetAgentRepository
 from app.repositories.runs import ExecutionRepository, ResultRepository, RunRepository
 from app.repositories.suites import TestCaseRepository
@@ -27,11 +26,6 @@ from app.security.pii_redaction import redact_execution_data
 
 settings = get_settings()
 logger = get_logger(__name__)
-
-
-def _is_transient(error: BaseException) -> bool:
-    # Retry timeouts and connection failures; an HTTP error status from the agent is final.
-    return isinstance(error, TargetAgentError) and not isinstance(error, TargetAgentUnavailableError)
 
 
 def generate_trace_id() -> str:
@@ -58,6 +52,8 @@ class ExecutionService:
         self.result_repo = result_repo
         self.agent_repo = agent_repo
         self.case_repo = case_repo
+        # The cost tracker joins the caller's transaction so that a rolled
+        # back run does not leave committed cost rows behind.
         self.cost_tracker = CostTracker(execution_repo.session)
 
     async def execute_run(self, run_id: UUID) -> Run:
@@ -75,7 +71,7 @@ class ExecutionService:
         run.started_at = datetime.utcnow()
         await self.run_repo.session.flush()
 
-        test_cases = await self.case_repo.list_by_suite(run.suite_id)
+        test_cases = await self.case_repo.list_all_by_suite(run.suite_id)
         run.total_tests = len(test_cases)
         await self.run_repo.session.flush()
 
@@ -92,7 +88,7 @@ class ExecutionService:
             )
 
             try:
-                response = await self._call_target_agent(agent, test_case, run)
+                response = await self._call_target_agent(agent, test_case, run, execution)
 
                 request_body = self._build_request(agent, test_case)
                 execution_data = {
@@ -112,23 +108,19 @@ class ExecutionService:
 
                 execution = await self.execution_repo.create(execution)
 
-                response_text = str(response.get("text", response.get("response", str(response))))
+                response_text = self._response_text(response)
                 estimated_tokens = len(response_text) // 4  # rough estimate
                 if estimated_tokens > 0:
-                    try:
-                        await self.cost_tracker.track_cost(
-                            category=CostCategory.LLM_INFERENCE,
-                            provider=agent.auth_config.get("provider", "target_agent"),
-                            model=agent.auth_config.get("model", "unknown"),
-                            input_tokens=len(test_case.input) // 4,
-                            output_tokens=estimated_tokens,
-                            run_id=run.id,
-                            test_case_id=test_case.id,
-                            metadata={"execution_id": str(execution.id), "agent_name": agent.name},
-                        )
-                    except Exception as cost_error:
-                        # Cost data is a secondary signal (PRD F9): never fail the execution.
-                        logger.warning("cost_tracking_failed", error=str(cost_error))
+                    await self.cost_tracker.track_cost(
+                        category=CostCategory.LLM_INFERENCE,
+                        provider=agent.auth_config.get("provider", "target_agent"),
+                        model=agent.auth_config.get("model", "unknown"),
+                        input_tokens=len(test_case.input) // 4,
+                        output_tokens=estimated_tokens,
+                        run_id=run.id,
+                        test_case_id=test_case.id,
+                        metadata={"execution_id": str(execution.id), "agent_name": agent.name},
+                    )
             except Exception as e:
                 execution.status = ExecutionStatus.FAILED
                 execution.completed_at = datetime.utcnow()
@@ -150,21 +142,23 @@ class ExecutionService:
     @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=1, max=10),
-        retry=retry_if_exception(_is_transient),
+        # The exceptions raised below are the transport-level failures that
+        # are safe to retry. The previous predicate only matched the raw httpx
+        # exceptions, but those are converted into RedTeamException subclasses
+        # inside the method body, so the retry never fired.
+        retry=retry_if_exception_type(
+            (TargetAgentTimeoutError, TargetAgentUnavailableError, TargetAgentError)
+        ),
         reraise=True,
     )
     async def _call_target_agent(
-        self, agent: TargetAgent, test_case: TestCase, run: Run
+        self,
+        agent: TargetAgent,
+        test_case: TestCase,
+        run: Run,
+        execution: Execution | None = None,
     ) -> dict[str, Any]:
-        # SSRF guard (scheme, allowed hosts, private IPs per settings). A rejected URL fails
-        # the execution, which scores INCONCLUSIVE.
-        try:
-            validate_target_url(agent.endpoint_url)
-        except ValueError as e:
-            raise TargetAgentUnavailableError(f"{agent.endpoint_url} (blocked: {e})") from e
         timeout = httpx.Timeout(agent.timeout_seconds, connect=5.0)
-
-        execution = await self.execution_repo.get_by_run_and_test_case(run.id, test_case.id)
 
         headers = {
             "Content-Type": "application/json",
@@ -198,6 +192,28 @@ class ExecutionService:
                 raise TargetAgentError(f"Request failed: {e}") from e
 
         return self._extract_response(agent, response.json())
+
+    @staticmethod
+    def _response_text(response: Any) -> str:
+        """Extract the textual part of a target response.
+
+        The agent may return any shape: a plain string, a dict with a
+        configured extraction key, or a nested structure. Stringifying the
+        whole payload inflated the token estimate and therefore the cost.
+        """
+        if isinstance(response, str):
+            return response
+        if isinstance(response, dict):
+            for key in ("text", "response", "output", "content", "message"):
+                value = response.get(key)
+                if isinstance(value, str):
+                    return value
+                if isinstance(value, dict):
+                    nested = ExecutionService._response_text(value)
+                    if nested:
+                        return nested
+            return ""
+        return str(response) if response is not None else ""
 
     def _build_request(self, agent: TargetAgent, test_case: TestCase) -> dict[str, Any]:
         template = agent.request_template

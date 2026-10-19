@@ -1,4 +1,4 @@
-﻿from datetime import datetime
+from datetime import datetime
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -6,10 +6,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.core.database import get_async_session
+from app.core.exceptions import ValidationError
 from app.core.logging import get_logger
 from app.core.telemetry import get_tracer
 from app.domain.enums import RunStatus
 from app.evaluation.gate.evaluator import GateEvaluator
+from app.evaluation.gate.reports import GateReportGenerator
 from app.evaluation.pipeline.models import (
     PipelineConfig,
     PipelineResult,
@@ -20,6 +22,7 @@ from app.evaluation.pipeline.models import (
 )
 from app.evaluation.regression.detector import RegressionDetector
 from app.evaluation.severity.classifier import SeverityClassifier
+from app.domain.value_objects import RegressionFinding
 from app.models.baseline import Baseline, BaselineItem
 from app.repositories.agents import TargetAgentRepository
 from app.repositories.baselines import (
@@ -72,7 +75,7 @@ class EvaluationPipeline:
 
     def __init__(self, session: AsyncSession):
         self.session = session
-        self.run: PipelineRun | None = None
+        self._pipeline_run: PipelineRun | None = None
 
         self.suite_repo = TestSuiteRepository(session)
         self.case_repo = TestCaseRepository(session)
@@ -97,34 +100,79 @@ class EvaluationPipeline:
             self.regression_repo, self.review_repo
         )
 
+    @property
+    def pipeline_run(self) -> PipelineRun:
+        """The current pipeline run.
+
+        The attribute used to be called ``run``, which shadowed the
+        ``run()`` method: a second invocation of the pipeline raised
+        "object is not callable".
+        """
+        if self._pipeline_run is None:
+            raise RuntimeError("The pipeline has not been started")
+        return self._pipeline_run
+
+    @pipeline_run.setter
+    def pipeline_run(self, value: PipelineRun) -> None:
+        self._pipeline_run = value
+
+    @property
+    def result(self) -> PipelineResult:
+        """The result of the current pipeline run.
+
+        ``PipelineRun.result`` is optional in the model, but the pipeline
+        always initialises it before the first step. Accessing it through
+        this property makes that invariant explicit and removes the
+        ``None`` checks from every step.
+        """
+        result = self.pipeline_run.result
+        if result is None:
+            raise RuntimeError("The pipeline result has not been initialised")
+        return result
+
     async def run(self, config: PipelineConfig) -> PipelineResult:
         """Execute the complete evaluation pipeline."""
-        self.run = PipelineRun(config=config)
+        self.pipeline_run = PipelineRun(config=config)
+        # The result must exist before the first step runs: every step
+        # appends to ``self.result.steps``. Without this initialisation
+        # the pipeline raised AttributeError on 'NoneType' object has no
+        # attribute 'steps' before doing any work.
+        self.pipeline_run.result = PipelineResult(
+            pipeline_id=self.pipeline_run.id,
+            status=PipelineStatus.QUEUED,
+            config=config,
+            started_at=datetime.utcnow(),
+        )
 
         with tracer.start_as_current_span("evaluation_pipeline") as span:
             span.set_attribute("pipeline.name", config.name)
-            span.set_attribute("pipeline.id", str(self.run.id))
+            span.set_attribute("pipeline.id", str(self.pipeline_run.id))
 
             try:
                 await self._execute_pipeline()
             except Exception as e:
-                logger.error("pipeline_failed", pipeline_id=str(self.run.id), error=str(e))
-                self.run.status = PipelineStatus.FAILED
-                self.run.result = PipelineResult(
-                    pipeline_id=self.run.id,
-                    status=PipelineStatus.FAILED,
-                    config=config,
-                    error=str(e),
-                )
+                logger.error("pipeline_failed", pipeline_id=str(self.pipeline_run.id), error=str(e))
+                self.pipeline_run.status = PipelineStatus.FAILED
+                if self.pipeline_run.result is None:
+                    self.pipeline_run.result = PipelineResult(
+                        pipeline_id=self.pipeline_run.id,
+                        status=PipelineStatus.FAILED,
+                        config=config,
+                        error=str(e),
+                    )
+                else:
+                    self.result.status = PipelineStatus.FAILED
+                    self.result.error = str(e)
+                    self.result.completed_at = datetime.utcnow()
                 raise
             finally:
                 await self._persist_run()
 
-        return self.run.result
+        return self.result
 
     async def _execute_pipeline(self):
         """Execute all pipeline steps in sequence."""
-        config = self.run.config
+        config = self.pipeline_run.config
 
         await self._step_validate_config()
 
@@ -148,22 +196,22 @@ class EvaluationPipeline:
 
         await self._step_generate_reports()
 
-        self.run.status = PipelineStatus.COMPLETED
-        self.run.result.status = PipelineStatus.COMPLETED
-        self.run.result.completed_at = datetime.utcnow()
-        if self.run.result.started_at:
-            self.run.result.total_duration_seconds = (
-                self.run.result.completed_at - self.run.result.started_at
+        self.pipeline_run.status = PipelineStatus.COMPLETED
+        self.result.status = PipelineStatus.COMPLETED
+        self.result.completed_at = datetime.utcnow()
+        if self.result.started_at:
+            self.result.total_duration_seconds = (
+                self.result.completed_at - self.result.started_at
             ).total_seconds()
 
-        logger.info("pipeline_completed", pipeline_id=str(self.run.id))
+        logger.info("pipeline_completed", pipeline_id=str(self.pipeline_run.id))
 
     async def _step_validate_config(self):
         """Step 1: Validate pipeline configuration."""
         step = PipelineStep(name="validate_config", status=PipelineStepStatus.RUNNING, started_at=datetime.utcnow())
-        self.run.result.steps.append(step)
+        self.result.steps.append(step)
 
-        config = self.run.config
+        config = self.pipeline_run.config
 
         suite = await self.suite_repo.get(config.suite_id)
         if not suite:
@@ -181,14 +229,14 @@ class EvaluationPipeline:
 
         step.status = PipelineStepStatus.COMPLETED
         step.completed_at = datetime.utcnow()
-        logger.info("config_validated", pipeline_id=str(self.run.id))
+        logger.info("config_validated", pipeline_id=str(self.pipeline_run.id))
 
     async def _step_load_dataset_and_suite(self):
         """Step 2: Load dataset and test suite."""
         step = PipelineStep(name="load_dataset_and_suite", status=PipelineStepStatus.RUNNING, started_at=datetime.utcnow())
-        self.run.result.steps.append(step)
+        self.result.steps.append(step)
 
-        config = self.run.config
+        config = self.pipeline_run.config
 
         test_cases = await self.case_repo.list_by_suite(config.suite_id)
         if not test_cases:
@@ -197,14 +245,14 @@ class EvaluationPipeline:
         step.status = PipelineStepStatus.COMPLETED
         step.completed_at = datetime.utcnow()
         step.metadata = {"test_case_count": len(test_cases)}
-        logger.info("dataset_loaded", pipeline_id=str(self.run.id), test_cases=len(test_cases))
+        logger.info("dataset_loaded", pipeline_id=str(self.pipeline_run.id), test_cases=len(test_cases))
 
     async def _step_build_matrix(self):
         """Step 3: Build evaluation matrix (Test Case Ã— Model Ã— Prompt Ã— Provider)."""
         step = PipelineStep(name="build_matrix", status=PipelineStepStatus.RUNNING, started_at=datetime.utcnow())
-        self.run.result.steps.append(step)
+        self.result.steps.append(step)
 
-        config = self.run.config
+        config = self.pipeline_run.config
         suite = await self.suite_repo.get(config.suite_id)
 
         matrix_configs = []
@@ -235,18 +283,28 @@ class EvaluationPipeline:
             created_by=config.created_by,
         )
 
-        self.run.result.metadata["matrix_id"] = str(matrix.id)
-        self.run.result.total_cells = matrix.total_cells
+        self.result.metadata["matrix_id"] = str(matrix.id)
+        self.result.total_cells = matrix.total_cells
 
         step.status = PipelineStepStatus.COMPLETED
         step.completed_at = datetime.utcnow()
         step.metadata = {"matrix_id": str(matrix.id), "total_cells": matrix.total_cells}
-        logger.info("matrix_built", pipeline_id=str(self.run.id), matrix_id=str(matrix.id), cells=matrix.total_cells)
+        logger.info("matrix_built", pipeline_id=str(self.pipeline_run.id), matrix_id=str(matrix.id), cells=matrix.total_cells)
 
     def _build_matrix_config(self, model_config: dict, provider_config: dict, prompt_version_id: UUID):
         from app.domain.matrix import MatrixConfiguration
+
+        # ``model_id`` is required by the configuration model. A missing value
+        # used to be passed through as ``None`` and raised a Pydantic
+        # validation error deep inside the matrix builder.
+        model_id = model_config.get("model_id")
+        if not model_id:
+            raise ValidationError(
+                "The pipeline configuration must define a 'model_id' for every model",
+                {"model_config": model_config},
+            )
         return MatrixConfiguration(
-            model_id=model_config.get("model_id"),
+            model_id=model_id,
             model_provider=model_config.get("provider", "openai"),
             model_parameters=model_config.get("parameters", {}),
             prompt_version_id=prompt_version_id,
@@ -256,26 +314,26 @@ class EvaluationPipeline:
     async def _step_execute_matrix(self):
         """Step 4: Execute all matrix cells."""
         step = PipelineStep(name="execute_matrix", status=PipelineStepStatus.RUNNING, started_at=datetime.utcnow())
-        self.run.result.steps.append(step)
+        self.result.steps.append(step)
 
-        matrix_id = UUID(self.run.result.metadata["matrix_id"])
+        matrix_id = UUID(self.result.metadata["matrix_id"])
 
         matrix = await self.matrix_service.execute_matrix(matrix_id)
 
-        self.run.result.completed_cells = matrix.completed_cells
-        self.run.result.failed_cells = matrix.failed_cells
+        self.result.completed_cells = matrix.completed_cells
+        self.result.failed_cells = matrix.failed_cells
 
         step.status = PipelineStepStatus.COMPLETED
         step.completed_at = datetime.utcnow()
         step.metadata = {"completed": matrix.completed_cells, "failed": matrix.failed_cells}
-        logger.info("matrix_executed", pipeline_id=str(self.run.id), matrix_id=str(matrix_id))
+        logger.info("matrix_executed", pipeline_id=str(self.pipeline_run.id), matrix_id=str(matrix_id))
 
     async def _step_aggregate_results(self):
         """Step 5: Aggregate results from all cells."""
         step = PipelineStep(name="aggregate_results", status=PipelineStepStatus.RUNNING, started_at=datetime.utcnow())
-        self.run.result.steps.append(step)
+        self.result.steps.append(step)
 
-        matrix_id = UUID(self.run.result.metadata["matrix_id"])
+        matrix_id = UUID(self.result.metadata["matrix_id"])
         cells = await self.cell_repo.list_by_matrix(matrix_id)
 
         total_passed = 0
@@ -292,10 +350,10 @@ class EvaluationPipeline:
                     total_inconclusive += run.inconclusive_count
                     total_cost += run.total_cost_usd
 
-        self.run.result.passed_count = total_passed
-        self.run.result.failed_count = total_failed
-        self.run.result.inconclusive_count = total_inconclusive
-        self.run.result.total_cost_usd = total_cost
+        self.result.passed_count = total_passed
+        self.result.failed_count = total_failed
+        self.result.inconclusive_count = total_inconclusive
+        self.result.total_cost_usd = total_cost
 
         step.status = PipelineStepStatus.COMPLETED
         step.completed_at = datetime.utcnow()
@@ -305,15 +363,15 @@ class EvaluationPipeline:
             "inconclusive": total_inconclusive,
             "cost_usd": total_cost,
         }
-        logger.info("results_aggregated", pipeline_id=str(self.run.id), passed=total_passed, failed=total_failed)
+        logger.info("results_aggregated", pipeline_id=str(self.pipeline_run.id), passed=total_passed, failed=total_failed)
 
     async def _step_baseline_comparison(self):
         """Step 6: Compare against baseline and detect regressions."""
         step = PipelineStep(name="baseline_comparison", status=PipelineStepStatus.RUNNING, started_at=datetime.utcnow())
-        self.run.result.steps.append(step)
+        self.result.steps.append(step)
 
-        config = self.run.config
-        matrix_id = UUID(self.run.result.metadata["matrix_id"])
+        config = self.pipeline_run.config
+        matrix_id = UUID(self.result.metadata["matrix_id"])
         cells = await self.cell_repo.list_by_matrix(matrix_id)
 
         total_regressions = 0
@@ -354,21 +412,29 @@ class EvaluationPipeline:
                             low_count += 1
 
                         if config.require_human_review and finding.severity.value in ("critical", "high"):
+                            # ``regression_id`` is a foreign key to
+                            # ``regressions.id``. The test-case id was written
+                            # into it previously, which violated the FK.
+                            regression = await self.regression_repo.get_by_run_and_test_case(
+                                cell.run_id, finding.test_case_id
+                            )
+                            if not regression:
+                                continue
                             review = await self.review_repo.create_review(
-                                regression_id=UUID(finding.test_case_id),
+                                regression_id=regression.id,
                                 run_id=cell.run_id,
                                 severity=finding.severity,
                                 confidence=0.8,
                                 category="regression",
                             )
-                            self.run.result.review_ids.append(review.id)
+                            self.result.review_ids.append(review.id)
 
-        self.run.result.regression_count = total_regressions
-        self.run.result.critical_count = critical_count
-        self.run.result.high_count = high_count
-        self.run.result.medium_count = medium_count
-        self.run.result.low_count = low_count
-        self.run.result.review_required = len(self.run.result.review_ids) > 0
+        self.result.regression_count = total_regressions
+        self.result.critical_count = critical_count
+        self.result.high_count = high_count
+        self.result.medium_count = medium_count
+        self.result.low_count = low_count
+        self.result.review_required = len(self.result.review_ids) > 0
 
         step.status = PipelineStepStatus.COMPLETED
         step.completed_at = datetime.utcnow()
@@ -379,7 +445,7 @@ class EvaluationPipeline:
             "medium": medium_count,
             "low": low_count,
         }
-        logger.info("baseline_comparison_done", pipeline_id=str(self.run.id), regressions=total_regressions)
+        logger.info("baseline_comparison_done", pipeline_id=str(self.pipeline_run.id), regressions=total_regressions)
 
     async def _create_baseline_from_cell(self, cell) -> Any | None:
         """Create baseline from a completed cell run."""
@@ -390,8 +456,20 @@ class EvaluationPipeline:
         if not run:
             return None
 
-        results = await self.result_repo.list_by_run(run.id)
+        results = await self.result_repo.list_all_by_run(run.id)
         if not results:
+            return None
+
+        # ``approved_by`` is a foreign key to ``users.id``. A hardcoded
+        # all-zeros UUID violated the constraint and falsified the approval
+        # audit trail, so the run's creator is used instead. When the run has
+        # no creator the baseline is left unapproved rather than attributed
+        # to a non-existent user.
+        approved_by = run.created_by
+        if not approved_by:
+            logger.warning(
+                "auto_baseline_without_creator", run_id=str(run.id), suite_id=str(run.suite_id)
+            )
             return None
 
         baseline = Baseline(
@@ -403,7 +481,7 @@ class EvaluationPipeline:
             framework_version=run.framework_version,
             model_versions=run.model_versions,
             prompt_versions=run.prompt_versions,
-            approved_by=UUID("00000000-0000-0000-0000-000000000000"),
+            approved_by=approved_by,
             approved_at=datetime.utcnow(),
             is_active=True,
         )
@@ -423,20 +501,65 @@ class EvaluationPipeline:
         return baseline
 
     async def _step_severity_classification(self):
-        """Step 7: Classify severity of findings."""
-        step = PipelineStep(name="severity_classification", status=PipelineStepStatus.RUNNING, started_at=datetime.utcnow())
-        self.run.result.steps.append(step)
+        """Step 7: Classify severity of findings.
+
+        The severity of every persisted regression is (re)classified from the
+        deterministic domain policies. Previously the step was a no-op that
+        reported COMPLETED without doing any work.
+        """
+        step = PipelineStep(
+            name="severity_classification",
+            status=PipelineStepStatus.RUNNING,
+            started_at=datetime.utcnow(),
+        )
+        self.result.steps.append(step)
+
+        matrix_id = UUID(self.result.metadata["matrix_id"])
+        cells = await self.cell_repo.list_by_matrix(matrix_id)
+
+        classifier = SeverityClassifier(self.case_repo)
+        classified = 0
+        severity_counts: dict[str, int] = {}
+
+        for cell in cells:
+            if not cell.run_id:
+                continue
+            regressions = await self.regression_repo.list_by_run(cell.run_id)
+            for regression in regressions:
+                finding = RegressionFinding(
+                    test_case_id=str(regression.test_case_id),
+                    previous_verdict=regression.previous_verdict,
+                    current_verdict=regression.current_verdict,
+                    regression_type=regression.regression_type,
+                    severity=regression.severity,
+                    baseline_run_id=str(regression.baseline_id),
+                    current_run_id=str(cell.run_id),
+                )
+                classification = await classifier.classify(finding)
+                regression.severity = classification.level
+                classified += 1
+                key = classification.level.value
+                severity_counts[key] = severity_counts.get(key, 0) + 1
+
+        await self.session.flush()
 
         step.status = PipelineStepStatus.COMPLETED
         step.completed_at = datetime.utcnow()
+        step.metadata = {"classified": classified, "by_severity": severity_counts}
+        logger.info(
+            "severity_classified",
+            pipeline_id=str(self.pipeline_run.id),
+            classified=classified,
+            by_severity=severity_counts,
+        )
 
     async def _step_gate_evaluation(self):
         """Step 8: Evaluate quality gate."""
         step = PipelineStep(name="gate_evaluation", status=PipelineStepStatus.RUNNING, started_at=datetime.utcnow())
-        self.run.result.steps.append(step)
+        self.result.steps.append(step)
 
-        config = self.run.config
-        matrix_id = UUID(self.run.result.metadata["matrix_id"])
+        config = self.pipeline_run.config
+        matrix_id = UUID(self.result.metadata["matrix_id"])
         cells = await self.cell_repo.list_by_matrix(matrix_id)
 
         overall_gate_decision = "PASS"
@@ -456,24 +579,24 @@ class EvaluationPipeline:
                 elif gate_result.decision == "WARN" and overall_gate_decision == "PASS":
                     overall_gate_decision = "WARN"
 
-        self.run.result.gate_decision = overall_gate_decision
-        self.run.result.gate_exit_code = overall_exit_code
+        self.result.gate_decision = overall_gate_decision
+        self.result.gate_exit_code = overall_exit_code
 
         step.status = PipelineStepStatus.COMPLETED
         step.completed_at = datetime.utcnow()
         step.metadata = {"decision": overall_gate_decision, "exit_code": overall_exit_code}
-        logger.info("gate_evaluated", pipeline_id=str(self.run.id), decision=overall_gate_decision)
+        logger.info("gate_evaluated", pipeline_id=str(self.pipeline_run.id), decision=overall_gate_decision)
 
     async def _step_release_decision(self):
         """Step 9: Determine release readiness decision."""
         step = PipelineStep(name="release_decision", status=PipelineStepStatus.RUNNING, started_at=datetime.utcnow())
-        self.run.result.steps.append(step)
+        self.result.steps.append(step)
 
-        gate_decision = self.run.result.gate_decision
-        critical_count = self.run.result.critical_count
-        high_count = self.run.result.high_count
-        review_required = self.run.result.review_required
-        review_ids = self.run.result.review_ids
+        gate_decision = self.result.gate_decision
+        critical_count = self.result.critical_count
+        high_count = self.result.high_count
+        review_required = self.result.review_required
+        review_ids = self.result.review_ids
 
         if gate_decision == "BLOCK" or critical_count > 0 or gate_decision == "FAIL" or high_count > 0:
             release_decision = "BLOCKED"
@@ -495,29 +618,43 @@ class EvaluationPipeline:
 
                 if has_confirmed_regression:
                     release_decision = "BLOCKED"
+                elif gate_decision == "WARN" or self.result.medium_count > 0 or self.result.low_count > 0:
+                    release_decision = "WARNING"
                 else:
                     release_decision = "READY"
-            elif review_required:
-                release_decision = "NEEDS_REVIEW"
-            elif gate_decision == "WARN" or self.run.result.medium_count > 0 or self.run.result.low_count > 0:
-                release_decision = "WARNING"
             else:
-                release_decision = "READY"
+                # The inner ``elif review_required`` was always true inside
+                # this branch, which made the WARNING and READY paths
+                # unreachable.
+                release_decision = "NEEDS_REVIEW"
+        elif gate_decision == "WARN" or self.result.medium_count > 0 or self.result.low_count > 0:
+            release_decision = "WARNING"
+        else:
+            release_decision = "READY"
 
-        self.run.result.release_decision = release_decision
+        self.result.release_decision = release_decision
 
         step.status = PipelineStepStatus.COMPLETED
         step.completed_at = datetime.utcnow()
         step.metadata = {"decision": release_decision}
-        logger.info("release_decision", pipeline_id=str(self.run.id), decision=release_decision)
+        logger.info("release_decision", pipeline_id=str(self.pipeline_run.id), decision=release_decision)
 
     async def _step_human_review(self):
-        """Step 10: Handle human review if required."""
-        step = PipelineStep(name="human_review", status=PipelineStepStatus.RUNNING, started_at=datetime.utcnow())
-        self.run.result.steps.append(step)
+        """Step 10: Handle human review if required.
 
-        if self.run.result.review_required:
-            step.metadata = {"status": "awaiting_review", "review_count": len(self.run.result.review_ids)}
+        The review queue entries are created during the baseline-comparison
+        step; this step records the resulting pipeline status so that the
+        pipeline does not report COMPLETED while reviews are still open.
+        """
+        step = PipelineStep(
+            name="human_review",
+            status=PipelineStepStatus.RUNNING,
+            started_at=datetime.utcnow(),
+        )
+        self.result.steps.append(step)
+
+        if self.result.review_required:
+            step.metadata = {"status": "awaiting_review", "review_count": len(self.result.review_ids)}
         else:
             step.metadata = {"status": "not_required"}
 
@@ -525,17 +662,73 @@ class EvaluationPipeline:
         step.completed_at = datetime.utcnow()
 
     async def _step_generate_reports(self):
-        """Step 11: Generate CI/CD gate reports."""
-        step = PipelineStep(name="generate_reports", status=PipelineStepStatus.RUNNING, started_at=datetime.utcnow())
-        self.run.result.steps.append(step)
+        """Step 11: Generate CI/CD gate reports.
+
+        A JUnit XML report is produced for every completed cell run. The
+        report content is stored in the pipeline result metadata; the step
+        previously reported ``reports_generated: True`` without generating
+        anything.
+        """
+        step = PipelineStep(
+            name="generate_reports",
+            status=PipelineStepStatus.RUNNING,
+            started_at=datetime.utcnow(),
+        )
+        self.result.steps.append(step)
+
+        matrix_id = UUID(self.result.metadata["matrix_id"])
+        cells = await self.cell_repo.list_by_matrix(matrix_id)
+
+        generator = GateReportGenerator(self.run_repo, self.result_repo, self.regression_repo)
+        reports: dict[str, str] = {}
+        for cell in cells:
+            if not cell.run_id or cell.status != RunStatus.COMPLETED:
+                continue
+            try:
+                reports[str(cell.run_id)] = await generator.generate_junit_xml(cell.run_id)
+            except Exception as e:
+                logger.error(
+                    "report_generation_failed",
+                    pipeline_id=str(self.pipeline_run.id),
+                    run_id=str(cell.run_id),
+                    error=str(e),
+                )
 
         step.status = PipelineStepStatus.COMPLETED
         step.completed_at = datetime.utcnow()
-        step.metadata = {"reports_generated": True}
+        step.metadata = {"reports_generated": len(reports), "report_count": len(reports)}
+        if reports:
+            self.result.metadata["junit_reports"] = reports
 
     async def _persist_run(self):
-        """Persist pipeline run to database."""
-        logger.info("pipeline_persisted", pipeline_id=str(self.run.id), status=self.run.status.value)
+        """Persist pipeline run to database.
+
+        The pipeline configuration and the resulting counters are written to
+        the run's ``config_snapshot`` so that the run can be audited and
+        re-executed later. The method previously only logged, so nothing was
+        persisted.
+        """
+        if self.result is None:
+            return
+
+        try:
+            matrix_id = self.result.metadata.get("matrix_id")
+            if matrix_id:
+                matrix = await self.matrix_repo.get(UUID(matrix_id))
+                if matrix and matrix.runs:
+                    run = await self.run_repo.get(matrix.runs[0].id)
+                    if run:
+                        run.config_snapshot = self.pipeline_run.config.model_dump(mode="json")
+                        await self.session.flush()
+        except Exception as e:
+            # A persistence failure must not mask the pipeline outcome, but it
+            # has to be visible in the logs.
+            logger.error(
+                "pipeline_persist_failed", pipeline_id=str(self.pipeline_run.id), error=str(e)
+            )
+            return
+
+        logger.info("pipeline_persisted", pipeline_id=str(self.pipeline_run.id), status=self.pipeline_run.status.value)
 
 
 async def run_evaluation_pipeline(config: PipelineConfig) -> PipelineResult:

@@ -1,13 +1,11 @@
-﻿import json
-
-import httpx
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.domain.value_objects import EvidenceItem, JudgeOutput, LLMRubric
 from app.evaluation.judges.base import BaseJudge
-from app.providers.llm import LLMProviderFactory
+from app.evaluation.judges.llm_judge import _parse_judge_json
+from app.providers.llm import LLMProviderError, LLMProviderFactory
 
 settings = get_settings()
 logger = get_logger(__name__)
@@ -15,12 +13,20 @@ logger = get_logger(__name__)
 
 class FallbackJudge(BaseJudge):
     def __init__(self):
-        self.provider = LLMProviderFactory.create_provider(
-            settings.SECONDARY_JUDGE_PROVIDER,
-            settings.SECONDARY_JUDGE_MODEL,
-            settings.SECONDARY_JUDGE_API_KEY,
-            settings.SECONDARY_JUDGE_BASE_URL,
-        )
+        # The provider is created lazily so that a scoring service that never
+        # needs the secondary judge does not require its credentials.
+        self._provider = None
+
+    @property
+    def provider(self):
+        if self._provider is None:
+            self._provider = LLMProviderFactory.create_provider(
+                settings.SECONDARY_JUDGE_PROVIDER,
+                settings.SECONDARY_JUDGE_MODEL,
+                settings.SECONDARY_JUDGE_API_KEY,
+                settings.SECONDARY_JUDGE_BASE_URL,
+            )
+        return self._provider
 
     def _build_prompt(self, test_input: str, response: str, rubric: LLMRubric | None) -> str:
         criteria_text = ""
@@ -76,7 +82,12 @@ Only output the JSON object. No additional text."""
     @retry(
         stop=stop_after_attempt(2),
         wait=wait_exponential(multiplier=1, min=1, max=5),
-        retry=retry_if_exception_type((httpx.TimeoutException, httpx.ConnectError)),
+        # The provider converts the transport errors into
+        # ``LLMProviderError``; retrying on the raw httpx exceptions never
+        # fired. ``reraise=True`` keeps the typed exception instead of
+        # wrapping it in ``tenacity.RetryError``.
+        retry=retry_if_exception_type((LLMProviderError,)),
+        reraise=True,
     )
     async def judge(
         self,
@@ -97,13 +108,11 @@ Only output the JSON object. No additional text."""
             logger.error("fallback_judge_provider_error", error=str(e))
             raise
 
-        try:
-            output_data = json.loads(result["text"])
-        except json.JSONDecodeError as e:
-            logger.error(
-                "fallback_judge_invalid_json", error=str(e), raw_output=result["text"][:500]
-            )
-            raise
+        text = result.get("text") or ""
+        output_data = _parse_judge_json(text)
+        if output_data is None:
+            logger.error("fallback_judge_invalid_json", raw_output=text[:500])
+            raise ValueError("Fallback judge returned a response that is not valid JSON")
 
         output_data["metadata"] = {
             "tokens_used": result.get("tokens_used", 0),
@@ -112,9 +121,21 @@ Only output the JSON object. No additional text."""
             "model": settings.SECONDARY_JUDGE_MODEL,
         }
 
-        judge_output = JudgeOutput(**output_data)
+        try:
+            judge_output = JudgeOutput(**output_data)
+        except Exception as e:
+            logger.error("fallback_judge_schema_invalid", error=str(e))
+            raise ValueError(f"Fallback judge output failed schema validation: {e}") from e
 
         if rubric and rubric.require_evidence and not judge_output.evidence:
-            judge_output.evidence = [EvidenceItem(source="target_response", text=response[:200])]
+            # Marked as not judge-cited so the manufactured evidence cannot be
+            # mistaken for evidence the judge actually selected.
+            judge_output.evidence = [
+                EvidenceItem(
+                    source="unverified_target_response",
+                    text=response[:200],
+                    metadata={"judge_cited": False},
+                )
+            ]
 
         return judge_output

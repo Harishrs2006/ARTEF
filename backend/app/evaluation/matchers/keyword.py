@@ -1,4 +1,4 @@
-﻿
+
 from app.domain.enums import Verdict
 from app.domain.value_objects import EvidenceItem, MatcherConfig
 from app.evaluation.matchers.base import BaseMatcher

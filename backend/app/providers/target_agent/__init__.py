@@ -1,4 +1,4 @@
-﻿import ipaddress
+import ipaddress
 import socket
 from abc import ABC, abstractmethod
 from typing import Any, Dict, Optional

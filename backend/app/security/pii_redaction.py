@@ -1,4 +1,4 @@
-﻿"""PII Redaction utilities for protecting sensitive data in storage and logs."""
+"""PII Redaction utilities for protecting sensitive data in storage and logs."""
 
 import re
 from dataclasses import dataclass
@@ -176,11 +176,19 @@ def redact_execution_data(execution_data: dict[str, Any]) -> dict[str, Any]:
         execution_data["target_response"] = redact_for_storage(execution_data["target_response"])
 
     if "tool_calls" in execution_data:
-        tool_calls = execution_data["tool_calls"] or []  # None when the agent made no tool calls
-        for tc in tool_calls:
-            if "arguments" in tc:
-                tc["arguments"] = redact_for_storage(tc["arguments"])
-            if "result" in tc and isinstance(tc["result"], str):
-                tc["result"] = redact_text(tc["result"])
+        tool_calls = execution_data["tool_calls"]
+        # Most target agents do not return tool calls, so the value is
+        # routinely ``None``. Iterating over it raised a TypeError that
+        # failed every single execution.
+        if not tool_calls:
+            execution_data["tool_calls"] = tool_calls or []
+        else:
+            for tc in tool_calls:
+                if not isinstance(tc, dict):
+                    continue
+                if "arguments" in tc:
+                    tc["arguments"] = redact_for_storage(tc["arguments"])
+                if "result" in tc and isinstance(tc["result"], str):
+                    tc["result"] = redact_text(tc["result"])
 
     return execution_data

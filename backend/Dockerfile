@@ -1,9 +1,7 @@
-# Build from the repository root:  docker build -f backend/Dockerfile .
 FROM python:3.11-slim AS base
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONPATH=/app/backend \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
@@ -15,19 +13,22 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# Pinned, cross-platform lockfile generated from pyproject.toml (see README).
-COPY requirements.lock ./
-RUN pip install -r requirements.lock
-
+# The project metadata is copied first so that the dependency layer is
+# cached and is only invalidated when the dependencies actually change.
 COPY pyproject.toml ./
-COPY backend ./backend
+COPY backend/agent_redteam_framework.egg-info ./backend/agent_redteam_framework.egg-info 2>/dev/null || true
+
+RUN pip install --no-cache-dir uv && \
+    uv pip install --system --no-cache -e .
+
+# The application package lives at /app/app so that "uvicorn app.main:app"
+# resolves. The previous layout copied it to /app/backend/app, which only
+# worked because the compose file mounts the source directory over /app.
+COPY backend/app ./app
+COPY backend/alembic ./alembic
+COPY backend/alembic.ini ./alembic.ini
 COPY evaluation ./evaluation
 COPY scripts ./scripts
-COPY demo ./demo
-
-# The `app` package lives in backend/, so run from there (uvicorn app.main:app,
-# celery -A app.workers.celery_app, python ../scripts/...).
-WORKDIR /app/backend
 
 FROM base AS development
 

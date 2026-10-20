@@ -1,9 +1,10 @@
+import json
 from datetime import datetime
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, File, UploadFile
+import yaml
+from fastapi import APIRouter, Depends, File, Query, UploadFile
 from pydantic import BaseModel
-from pydantic import ValidationError as PydanticValidationError
 
 from app.api.deps import TokenData, get_case_repo, get_suite_repo, require_role
 from app.core.exceptions import NotFoundError, ValidationError
@@ -11,29 +12,20 @@ from app.core.logging import get_logger
 from app.domain.enums import TestCaseCategory, TestCaseSeverity
 from app.models.test_suite import TestCase, TestCaseVersion
 from app.repositories.suites import TestCaseRepository, TestSuiteRepository
-from app.services.suite_service import SuiteService, _case_columns
+from app.services.suite_service import SuiteService
 
 router = APIRouter()
 logger = get_logger(__name__)
 
 
 def _build_case_response(c) -> "TestCaseResponse":
-    eb = getattr(c, "expected_behavior", None)
-    if eb is None:
-        eb_type = getattr(c, "expected_behavior_type", None)
-        eb = {
-            "type": eb_type.value if hasattr(eb_type, "value") else eb_type,
-            "matcher_config": getattr(c, "matcher_config", None),
-            "rubric_config": getattr(c, "rubric_config", None),
-        }
     return TestCaseResponse(
         id=c.id,
         test_case_id=c.test_case_id,
-        version=c.version,
         category=c.category,
         severity=c.severity,
         input=c.input,
-        expected_behavior=eb or {},
+        expected_behavior=c.expected_behavior,
         metadata=getattr(c, "test_case_metadata", None) or {},
         is_active=c.is_active,
     )
@@ -42,7 +34,6 @@ def _build_case_response(c) -> "TestCaseResponse":
 class TestCaseResponse(BaseModel):
     id: UUID
     test_case_id: str
-    version: int = 1
     category: TestCaseCategory
     severity: TestCaseSeverity
     input: str
@@ -83,21 +74,27 @@ class ValidateResponse(BaseModel):
 @router.get("", response_model=list[TestSuiteResponse], include_in_schema=False)
 @router.get("/", response_model=list[TestSuiteResponse])
 async def list_suites(
-    skip: int = 0,
-    limit: int = 100,
+    skip: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=1000),
     suite_repo: TestSuiteRepository = Depends(get_suite_repo),
     case_repo: TestCaseRepository = Depends(get_case_repo),
     current_user: TokenData = Depends(
         require_role(["admin", "safety_engineer", "ml_engineer", "qa_engineer", "viewer"])
     ),
 ):
-    if skip < 0 or limit < 1 or limit > 100:
-        from app.core.exceptions import ValidationError as VE
-        raise VE("Invalid pagination parameters")
     suites = await suite_repo.list(skip=skip, limit=limit, filters={"is_active": True})
+    # The test cases of every listed suite are fetched with a single query
+    # instead of one query per suite.
+    cases_by_suite: dict[str, list] = {}
+    if suites:
+        suite_ids = {str(s.id) for s in suites}
+        all_cases = await case_repo.list_by_suite_ids(suite_ids)
+        for case in all_cases:
+            cases_by_suite.setdefault(str(case.suite_id), []).append(case)
+
     result = []
     for suite in suites:
-        cases = await case_repo.list_by_suite(suite.id)
+        cases = cases_by_suite.get(str(suite.id), [])
         result.append(
             TestSuiteResponse(
                 id=suite.id,
@@ -123,7 +120,7 @@ async def create_suite(
     current_user: TokenData = Depends(require_role(["admin", "safety_engineer", "ml_engineer"])),
 ):
     service = SuiteService(suite_repo, case_repo)
-    created = await service.create_suite(suite.model_dump(exclude_none=True), UUID(current_user.sub))
+    created = await service.create_suite(suite.model_dump(), UUID(current_user.sub))
     cases = await case_repo.list_by_suite(created.id)
     return TestSuiteResponse(
         id=created.id,
@@ -154,6 +151,49 @@ async def validate_suite(
 
 
 MAX_IMPORT_SIZE = 5 * 1024 * 1024  # 5MB
+
+
+class SuiteImportRequest(BaseModel):
+    """Inline suite definition supplied as text (paste or programmatic import)."""
+
+    content: str
+    format: str = "yaml"
+
+
+@router.post("/import", response_model=TestSuiteResponse, status_code=201)
+async def import_suite_content(
+    request: SuiteImportRequest,
+    suite_repo: TestSuiteRepository = Depends(get_suite_repo),
+    case_repo: TestCaseRepository = Depends(get_case_repo),
+    current_user: TokenData = Depends(require_role(["admin", "safety_engineer", "ml_engineer"])),
+):
+    """Import a suite from inline YAML/JSON content.
+
+    The file-upload variants live at ``/import/yaml`` and ``/import/json``;
+    this endpoint is for callers that already hold the text.
+    """
+    if len(request.content.encode("utf-8")) > MAX_IMPORT_SIZE:
+        raise ValidationError(f"Content too large (max {MAX_IMPORT_SIZE} bytes)")
+
+    service = SuiteService(suite_repo, case_repo)
+    if request.format.lower() == "json":
+        created = await service.import_json(request.content, UUID(current_user.sub))
+    else:
+        created = await service.import_yaml(request.content, UUID(current_user.sub))
+
+    cases = await case_repo.list_by_suite(created.id)
+    return TestSuiteResponse(
+        id=created.id,
+        name=created.name,
+        description=created.description,
+        version=created.version,
+        schema_version=created.schema_version,
+        is_active=created.is_active,
+        created_at=created.created_at,
+        updated_at=created.updated_at,
+        test_cases=[_build_case_response(c) for c in cases],
+    )
+
 
 @router.post("/import/yaml", response_model=TestSuiteResponse)
 async def import_yaml(
@@ -221,10 +261,10 @@ async def get_suite(
     ),
 ):
     service = SuiteService(suite_repo, case_repo)
-    found = await service.get_suite_with_cases(suite_id)
-    if not found:
+    suite = await service.get_suite_with_cases(suite_id)
+    if not suite:
         raise NotFoundError("TestSuite", str(suite_id))
-    suite, cases = found
+    cases = await case_repo.list_by_suite(suite.id)
     return TestSuiteResponse(
         id=suite.id,
         name=suite.name,
@@ -283,33 +323,61 @@ async def list_versions(
     ]
 
 
-def _case_payload(data: dict) -> dict:
-    """Convert the flat UI/API shape (expected_behavior_type + expected_behavior_matcher) into
-    the suite-file shape that _case_columns validates."""
-    behavior_type = data["expected_behavior_type"]
-    matcher = dict(data.get("expected_behavior_matcher") or {})
-    behavior: dict = {"type": behavior_type}
-    if behavior_type == "llm_rubric":
-        behavior["rubric"] = matcher.get("rubric") or {
-            "criteria": [
-                {
-                    "name": "meets_expectation",
-                    "description": matcher.get("description")
-                    or "The response is safe, appropriate and answers the request",
-                }
-            ]
-        }
+@router.post("/{suite_id}/import", response_model=TestSuiteResponse)
+async def import_suite_version(
+    suite_id: UUID,
+    request: SuiteImportRequest,
+    suite_repo: TestSuiteRepository = Depends(get_suite_repo),
+    case_repo: TestCaseRepository = Depends(get_case_repo),
+    current_user: TokenData = Depends(require_role(["admin", "safety_engineer", "ml_engineer"])),
+):
+    """Import a new version of an existing suite from inline YAML/JSON."""
+    suite = await suite_repo.get(suite_id)
+    if not suite:
+        raise NotFoundError("TestSuite", str(suite_id))
+
+    if len(request.content.encode("utf-8")) > MAX_IMPORT_SIZE:
+        raise ValidationError(f"Content too large (max {MAX_IMPORT_SIZE} bytes)")
+
+    service = SuiteService(suite_repo, case_repo)
+    if request.format.lower() == "json":
+        data = json.loads(request.content)
     else:
-        matcher.setdefault("type", behavior_type)
-        behavior["matcher"] = matcher
-    return {
-        "test_case_id": data["test_case_id"],
-        "category": data["category"],
-        "severity": data["severity"],
-        "input": data["input"],
-        "expected_behavior": behavior,
-        "metadata": data.get("metadata") or {},
-    }
+        data = yaml.safe_load(request.content)
+
+    if not isinstance(data, dict):
+        raise ValidationError("Suite definition must be a mapping")
+
+    data.setdefault("name", suite.name)
+    data.setdefault("description", suite.description)
+
+    updated = await service.create_version(
+        suite_id, data, UUID(current_user.sub), changelog="Imported"
+    )
+    cases = await case_repo.list_by_suite(updated.id)
+    return TestSuiteResponse(
+        id=updated.id,
+        name=updated.name,
+        description=updated.description,
+        version=updated.version,
+        schema_version=updated.schema_version,
+        is_active=updated.is_active,
+        created_at=updated.created_at,
+        updated_at=updated.updated_at,
+        test_cases=[_build_case_response(c) for c in cases],
+    )
+
+
+@router.delete("/{suite_id}")
+async def delete_suite(
+    suite_id: UUID,
+    suite_repo: TestSuiteRepository = Depends(get_suite_repo),
+    current_user: TokenData = Depends(require_role(["admin"])),
+):
+    deleted = await suite_repo.delete(suite_id)
+    if not deleted:
+        raise NotFoundError("TestSuite", str(suite_id))
+    return {"message": "Suite deleted"}
 
 
 class TestCaseCreate(BaseModel):
@@ -319,6 +387,7 @@ class TestCaseCreate(BaseModel):
     input: str
     expected_behavior_type: str
     expected_behavior_matcher: dict = {}
+    expected_behavior_rubric: dict | None = None
     metadata: dict = {}
 
 
@@ -329,6 +398,7 @@ class TestCaseUpdate(BaseModel):
     input: str | None = None
     expected_behavior_type: str | None = None
     expected_behavior_matcher: dict | None = None
+    expected_behavior_rubric: dict | None = None
     metadata: dict | None = None
     is_active: bool | None = None
 
@@ -345,27 +415,32 @@ async def create_test_case(
     if not suite:
         raise NotFoundError("TestSuite", str(suite_id))
 
-    tc_data = _case_payload(test_case.model_dump())
-    try:
-        columns = _case_columns(tc_data)
-    except (ValueError, PydanticValidationError) as e:
-        raise ValidationError(f"Invalid test case: {e}") from e
+    from app.domain.enums import ExpectedBehaviorType
+    from app.domain.value_objects import TestCaseMetadata
+
+    metadata = TestCaseMetadata(**test_case.metadata) if test_case.metadata else TestCaseMetadata()
 
     new_case = TestCase(
-        suite_id=str(suite_id),
+        suite_id=suite_id,
         test_case_id=test_case.test_case_id,
+        category=test_case.category,
+        severity=test_case.severity,
+        input=test_case.input,
+        expected_behavior_type=ExpectedBehaviorType(test_case.expected_behavior_type),
+        matcher_config=test_case.expected_behavior_matcher,
+        rubric_config=test_case.expected_behavior_rubric,
+        metadata=metadata,
         created_by=UUID(current_user.sub),
-        **columns,
     )
     new_case = await case_repo.create(new_case)
 
     version = TestCaseVersion(
         test_case_id=new_case.id,
         version=1,
-        snapshot=tc_data,
+        snapshot=test_case.model_dump(),
         created_by=UUID(current_user.sub),
     )
-    case_repo.session.add(version)
+    await case_repo.session.add(version)
     await case_repo.session.flush()
 
     return _build_case_response(new_case)
@@ -385,45 +460,38 @@ async def update_test_case(
         raise NotFoundError("TestSuite", str(suite_id))
 
     case = await case_repo.get(case_id)
-    # suite_id is stored as a string; compare as strings (UUID != str was always unequal).
-    if not case or str(case.suite_id) != str(suite_id):
+    if not case or case.suite_id != suite_id:
         raise NotFoundError("TestCase", str(case_id))
 
-    update_data = update.model_dump(exclude_unset=True)
-    current = {
-        "test_case_id": case.test_case_id,
-        "category": case.category.value,
-        "severity": case.severity.value,
-        "input": case.input,
-        "expected_behavior_type": case.expected_behavior_type.value,
-        "expected_behavior_matcher": case.matcher_config or {},
-        "metadata": case.test_case_metadata or {},
-    }
-    if "expected_behavior_type" in update_data and "expected_behavior_matcher" not in update_data:
-        current["expected_behavior_matcher"] = {}  # matcher fields belong to the old type
-    merged = {**current, **{k: v for k, v in update_data.items() if v is not None and k != "is_active"}}
-    tc_data = _case_payload(merged)
-    try:
-        columns = _case_columns(tc_data)
-    except (ValueError, PydanticValidationError) as e:
-        raise ValidationError(f"Invalid test case: {e}") from e
+    from app.domain.enums import ExpectedBehaviorType
+    from app.domain.value_objects import TestCaseMetadata
 
-    for column, value in columns.items():
-        setattr(case, column, value)
-    if update.test_case_id:
-        case.test_case_id = update.test_case_id
-    if update.is_active is not None:
-        case.is_active = update.is_active
-    case.version += 1
+    update_data = update.model_dump(exclude_unset=True)
+    for key, value in update_data.items():
+        if key == "expected_behavior_type" and value:
+            case.expected_behavior_type = ExpectedBehaviorType(value)
+        elif key == "expected_behavior_matcher":
+            case.matcher_config = value
+        elif key == "expected_behavior_rubric":
+            case.rubric_config = value
+        elif key == "metadata" and value:
+            case.test_case_metadata = TestCaseMetadata(**value).model_dump()
+        elif key == "category" and value:
+            case.category = value
+        elif key == "severity" and value:
+            case.severity = value
+        else:
+            setattr(case, key, value)
+
     case.updated_at = datetime.utcnow()
 
     version = TestCaseVersion(
         test_case_id=case.id,
-        version=case.version,
-        snapshot=tc_data,
+        version=case.version + 1,
+        snapshot=update_data,
         created_by=UUID(current_user.sub),
     )
-    case_repo.session.add(version)
+    await case_repo.session.add(version)
     await case_repo.session.flush()
 
     return _build_case_response(case)

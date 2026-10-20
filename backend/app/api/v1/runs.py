@@ -1,7 +1,8 @@
-﻿from datetime import datetime
+import asyncio
+from datetime import datetime
 from uuid import UUID
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Response
 from pydantic import BaseModel
 
 from app.api.deps import (
@@ -15,7 +16,8 @@ from app.api.deps import (
     get_suite_repo,
     require_role,
 )
-from app.core.exceptions import ConflictError, NotFoundError, TaskQueueUnavailableError
+from app.core.database import get_async_session
+from app.core.exceptions import ConflictError, NotFoundError
 from app.core.logging import get_logger
 from app.domain.enums import RunStatus
 from app.models.run import Run
@@ -23,7 +25,6 @@ from app.repositories.agents import TargetAgentRepository
 from app.repositories.baselines import BaselineRepository, ReviewQueueRepository
 from app.repositories.runs import ExecutionRepository, ResultRepository, RunRepository
 from app.repositories.suites import TestSuiteRepository
-from app.workers.celery_app import celery_app
 from app.workers.evaluation_tasks import run_evaluation
 
 router = APIRouter()
@@ -60,8 +61,6 @@ class RunResponse(BaseModel):
     completed_at: datetime | str | None = None
     created_at: datetime | str
     error_message: str | None = None
-    gate_decision: str | None = None
-    gate_summary: str | None = None
 
     class Config:
         from_attributes = True
@@ -80,6 +79,7 @@ async def list_runs(
         description="Sort field in 'field:direction' format, currently supported: created_at:desc",
     ),
     run_repo: RunRepository = Depends(get_run_repo),
+    response: Response = None,
     current_user: TokenData = Depends(
         require_role(["admin", "safety_engineer", "ml_engineer", "qa_engineer", "viewer"])
     ),
@@ -105,7 +105,16 @@ async def list_runs(
         order_by = field
         descending = direction == "desc"
 
-    runs = await run_repo.list(skip=skip, limit=limit, filters=filters, order_by=order_by, descending=descending)
+    runs = await run_repo.list_scalars(
+        skip=skip, limit=limit, filters=filters, order_by=order_by, descending=descending
+    )
+    total = await run_repo.count(filters=filters)
+    # The body stays a bare array (existing clients depend on it); the total is
+    # exposed through a header so the UI can paginate without a second
+    # round-trip.
+    response.headers["X-Total-Count"] = str(total)
+    response.headers["X-Page-Size"] = str(limit)
+    response.headers["X-Page-Offset"] = str(skip)
     return [RunResponse.model_validate(run) for run in runs]
 
 
@@ -125,6 +134,22 @@ class StatsResponse(BaseModel):
     cost_trend: list[float] = []
 
 
+async def _aggregate_in_own_session(run_repo: RunRepository) -> dict:
+    """Run the aggregate on a dedicated session.
+
+    An ``AsyncSession`` must not be used by two concurrent coroutines, so the
+    aggregate is executed in its own session rather than sharing the
+    request's session.
+    """
+    async with get_async_session() as session:
+        return await RunRepository(session).aggregate_stats()
+
+
+async def _count_pending_in_own_session(review_repo: ReviewQueueRepository) -> int:
+    async with get_async_session() as session:
+        return await ReviewQueueRepository(session).count_pending()
+
+
 @router.get("/stats", response_model=StatsResponse)
 async def get_stats(
     run_repo: RunRepository = Depends(get_run_repo),
@@ -133,44 +158,34 @@ async def get_stats(
         require_role(["admin", "safety_engineer", "ml_engineer", "qa_engineer", "viewer"])
     ),
 ):
-    runs = await run_repo.list(skip=0, limit=200, filters={})
-    pending_reviews = await review_repo.list_pending()
-    review_queue_count = len(pending_reviews)
+    # Aggregates are computed in SQL: a single GROUP BY over `runs` instead of
+    # loading hundreds of fully-hydrated Run rows and summing in Python.
+    #
+    # The two aggregates run on *separate* sessions: an AsyncSession is not
+    # safe for concurrent use, so `asyncio.gather` on a single session raises
+    # `IllegalStateChangeError` during teardown.
+    totals, review_queue_count = await asyncio.gather(
+        _aggregate_in_own_session(run_repo),
+        _count_pending_in_own_session(review_repo),
+    )
 
-    if not runs:
-        return StatsResponse(
-            total_runs=0,
-            pass_rate=0.0,
-            total_regressions=0,
-            critical_findings=0,
-            review_queue_count=review_queue_count,
-            avg_runtime=0.0,
-            total_cost=0.0,
-            high_count=0,
-            medium_count=0,
-            low_count=0,
-            pass_rate_trend=[],
-            regression_trend=[],
-            cost_trend=[]
-        )
-
-    total_runs = len(runs)
-    total_tests = sum(r.total_tests for r in runs if r.total_tests)
-    total_passed = sum(r.passed_count for r in runs if r.passed_count)
+    total_runs = totals["total_runs"]
+    total_tests = totals["total_tests"]
+    total_passed = totals["passed"]
     pass_rate = (total_passed / total_tests * 100) if total_tests > 0 else 0.0
 
-    total_regressions = sum(r.regression_count for r in runs if r.regression_count)
-    critical_findings = sum(r.critical_count for r in runs if r.critical_count)
-    high_count = sum(r.high_count for r in runs if r.high_count)
-    medium_count = sum(r.medium_count for r in runs if r.medium_count)
-    low_count = sum(r.low_count for r in runs if r.low_count)
+    total_regressions = totals["regressions"]
+    critical_findings = totals["critical"]
+    high_count = totals["high"]
+    medium_count = totals["medium"]
+    low_count = totals["low"]
 
-    total_latency = sum(r.total_latency_ms for r in runs if r.total_latency_ms)
+    total_latency = totals["total_latency"]
     avg_runtime = total_latency / total_runs if total_runs > 0 else 0.0
 
-    total_cost = sum(r.total_cost_usd for r in runs if r.total_cost_usd)
+    total_cost = totals["total_cost"]
 
-    completed_runs = [r for r in runs if r.status == RunStatus.COMPLETED][-7:]
+    completed_runs = await run_repo.list_completed_trend(limit=7)
 
     pass_rate_trend = []
     regression_trend = []
@@ -199,11 +214,6 @@ async def get_stats(
         regression_trend=regression_trend,
         cost_trend=cost_trend
     )
-
-
-def _run_in_process(run_id: str) -> None:
-    logger.info("run_eager_dispatch", run_id=run_id)
-    run_evaluation.apply(args=[run_id])
 
 
 @router.post("", response_model=RunResponse, status_code=201, include_in_schema=False)
@@ -247,22 +257,8 @@ async def create_run(
         created_by=UUID(current_user.sub),
     )
     new_run = await run_repo.create(new_run)
-    # Commit before dispatching so the worker can see the run.
-    await run_repo.session.commit()
 
-    if celery_app.conf.task_always_eager:
-        # Dev/test mode: run in-process after the response is sent.
-        background_tasks.add_task(_run_in_process, str(new_run.id))
-    else:
-        try:
-            run_evaluation.apply_async(args=[str(new_run.id)], retry=False)
-        except Exception as e:
-            logger.error("run_dispatch_failed", run_id=str(new_run.id), error=str(e))
-            new_run.status = RunStatus.FAILED
-            new_run.error_message = f"Could not queue run: {e}"
-            new_run.completed_at = datetime.utcnow()
-            await run_repo.session.commit()
-            raise TaskQueueUnavailableError({"run_id": str(new_run.id)}) from e
+    background_tasks.add_task(run_evaluation.delay, str(new_run.id))
 
     logger.info(
         "run_created", run_id=str(new_run.id), suite_id=str(suite.id), agent_id=str(agent.id)

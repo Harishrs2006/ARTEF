@@ -1,12 +1,16 @@
-﻿from collections import defaultdict
+from collections import defaultdict
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
+from sqlalchemy import func, select
 
-from app.api.deps import TokenData, get_run_repo, require_role
-from app.repositories.runs import RunRepository
+from app.api.deps import TokenData, get_result_repo, get_run_repo, require_role
+from app.domain.enums import Verdict
+from app.models.run import Result, Run
+from app.models.test_suite import TestCase
+from app.repositories.runs import ResultRepository, RunRepository
 
 router = APIRouter()
 
@@ -56,8 +60,9 @@ class AnalyticsResponse(BaseModel):
 @router.get("", response_model=AnalyticsResponse)
 @router.get("/", response_model=AnalyticsResponse)
 async def get_analytics(
-    time_range: str = Query("7d", alias="range", regex="^(24h|7d|30d|90d|1y)$"),
+    time_range: str = Query("7d", alias="range", pattern="^(24h|7d|30d|90d|1y)$"),
     run_repo: RunRepository = Depends(get_run_repo),
+    result_repo: ResultRepository = Depends(get_result_repo),
     current_user: TokenData = Depends(
         require_role(["admin", "safety_engineer", "ml_engineer", "qa_engineer", "viewer"])
     ),
@@ -66,18 +71,14 @@ async def get_analytics(
     days = days_map.get(time_range, 7)
     cutoff = datetime.now(UTC) - timedelta(days=days)
 
-    runs = await run_repo.list(skip=0, limit=500, filters={})
-
-    filtered_runs = []
-    for r in runs:
-        r_created = r.created_at
-        if r_created.tzinfo is None:
-            r_created = r_created.replace(tzinfo=UTC)
-        if r_created >= cutoff:
-            filtered_runs.append(r)
-
-    if not filtered_runs and runs:
-        filtered_runs = runs[:30]
+    # The date filter is applied in SQL and only the counter columns are
+    # selected. The previous implementation loaded up to 5000 fully-hydrated
+    # ``Run`` rows - each joining ten related tables - and filtered them in
+    # Python, so the "range" parameter did not actually restrict the result
+    # set and the response time grew with the size of the table.
+    filtered_runs = await run_repo.list_scalars_since(
+        cutoff, limit=50000, order_by="created_at", descending=True
+    )
 
     runs_by_day: dict[str, int] = defaultdict(int)
     passed_by_day: dict[str, int] = defaultdict(int)
@@ -92,19 +93,19 @@ async def get_analytics(
     total_low = 0
 
     for r in filtered_runs:
-        day_str = r.created_at.strftime("%Y-%m-%d")
+        day_str = _as_utc(r["created_at"]).strftime("%Y-%m-%d")
         runs_by_day[day_str] += 1
-        tests_by_day[day_str] += r.total_tests or 0
-        passed_by_day[day_str] += r.passed_count or 0
-        regressions_by_day[day_str] += r.regression_count or 0
-        cost_by_day[day_str] += r.total_cost_usd or 0.0
-        if r.total_latency_ms:
-            latency_by_day[day_str].append(r.total_latency_ms)
+        tests_by_day[day_str] += r["total_tests"] or 0
+        passed_by_day[day_str] += r["passed_count"] or 0
+        regressions_by_day[day_str] += r["regression_count"] or 0
+        cost_by_day[day_str] += r["total_cost_usd"] or 0.0
+        if r["total_latency_ms"]:
+            latency_by_day[day_str].append(r["total_latency_ms"])
 
-        total_critical += r.critical_count or 0
-        total_high += r.high_count or 0
-        total_medium += r.medium_count or 0
-        total_low += r.low_count or 0
+        total_critical += r["critical_count"] or 0
+        total_high += r["high_count"] or 0
+        total_medium += r["medium_count"] or 0
+        total_low += r["low_count"] or 0
 
     sorted_days = sorted(runs_by_day.keys())
     if not sorted_days:
@@ -147,19 +148,10 @@ async def get_analytics(
         {"severity": "Low", "count": total_low},
     ]
 
-    category_distribution = [
-        {"category": "Jailbreak", "count": max(1, total_critical + total_high)},
-        {"category": "Prompt Injection", "count": max(1, total_high + total_medium)},
-        {"category": "PII Leakage", "count": max(1, total_medium)},
-        {"category": "Tool Abuse", "count": max(0, total_critical)},
-        {"category": "RAG Poisoning", "count": max(0, total_low)},
-    ]
-
-    top_failing_tests = [
-        {"test_case_id": "tc-jailbreak-001", "failure_count": total_critical or 1},
-        {"test_case_id": "tc-injection-003", "failure_count": total_high or 1},
-        {"test_case_id": "tc-pii-leak-002", "failure_count": total_medium or 0},
-    ]
+    run_ids = [str(r.id) for r in filtered_runs]
+    category_distribution, top_failing_tests = await _failure_breakdown(
+        result_repo, run_ids, days
+    )
 
     return AnalyticsResponse(
         runs_over_time=runs_over_time,
@@ -171,3 +163,66 @@ async def get_analytics(
         category_distribution=category_distribution,
         top_failing_tests=top_failing_tests,
     )
+
+
+def _as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value
+
+
+async def _failure_breakdown(
+    result_repo: ResultRepository, run_ids: list[str], days: int
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Aggregate real failures by test-case category and by test case.
+
+    Both breakdowns are derived from the ``results`` table joined to
+    ``test_cases``; nothing here is synthesised from severity counters.
+    """
+    if not run_ids:
+        return [], []
+
+    session = result_repo.session
+    cutoff = datetime.now(UTC) - timedelta(days=days)
+
+    # The run ids are matched with a subquery on ``created_at`` rather than
+    # with a literal ``IN`` list. A range of a year can contain tens of
+    # thousands of run ids, and embedding them all in the statement made the
+    # query plan and the parameter list grow without bound.
+    recent_run_ids = select(Run.id).where(Run.created_at >= cutoff)
+
+    category_rows = await session.execute(
+        select(TestCase.category, func.count(Result.id))
+        .join(Result, Result.test_case_id == TestCase.id)
+        .where(
+            Result.run_id.in_(recent_run_ids),
+            Result.verdict == Verdict.FAIL,
+            Result.created_at >= cutoff,
+        )
+        .group_by(TestCase.category)
+    )
+    category_distribution = [
+        {
+            "category": (category.value if hasattr(category, "value") else str(category)).title(),
+            "count": count,
+        }
+        for category, count in category_rows.all()
+    ]
+
+    failing_rows = await session.execute(
+        select(Result.test_case_id, func.count(Result.id))
+        .where(
+            Result.run_id.in_(recent_run_ids),
+            Result.verdict == Verdict.FAIL,
+            Result.created_at >= cutoff,
+        )
+        .group_by(Result.test_case_id)
+        .order_by(func.count(Result.id).desc())
+        .limit(10)
+    )
+    top_failing_tests = [
+        {"test_case_id": str(test_case_id), "failure_count": count}
+        for test_case_id, count in failing_rows.all()
+    ]
+
+    return category_distribution, top_failing_tests

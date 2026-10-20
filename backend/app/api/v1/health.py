@@ -1,7 +1,9 @@
+import asyncio
+
 import boto3
 import chromadb
 import redis
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Response
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -15,57 +17,69 @@ settings = get_settings()
 
 @router.get("/health")
 async def health_check():
+    """Liveness probe: the process is up and serving.
+
+    It deliberately does not touch any dependency so that a transient
+    dependency outage does not cause the orchestrator to restart the API.
+    """
     return {"status": "healthy", "service": "redteam-framework"}
 
 
 @router.get("/ready")
 async def readiness_check(db: AsyncSession = Depends(get_db)):
-    checks = {
-        "database": False,
-        "redis": False,
-        "chromadb": False,
-        "minio": False,
-    }
+    """Readiness probe: check every dependency the deployment actually uses.
 
+    Only the database is mandatory. Redis, ChromaDB and S3/MinIO are optional
+    depending on the deployment (local evaluation mode does not need them), so
+    they are reported but do not block readiness unless they are configured.
+    """
+    checks: dict[str, bool] = {}
+    required: dict[str, bool] = {}
+
+    # --- database (mandatory) ---
     try:
         await db.execute(text("SELECT 1"))
         checks["database"] = True
     except Exception:
-        pass
+        checks["database"] = False
+    required["database"] = checks["database"]
 
-    try:
-        r = redis.from_url(settings.REDIS_URL)
-        r.ping()
-        checks["redis"] = True
-    except Exception:
-        pass
+    # --- redis (required when CELERY is used, i.e. a worker is deployed) ---
+    if settings.CELERY_BROKER_URL:
+        try:
+            client = redis.from_url(settings.REDIS_URL)
+            await asyncio.to_thread(client.ping)
+            checks["redis"] = True
+        except Exception:
+            checks["redis"] = False
+        required["redis"] = checks["redis"]
 
-    try:
-        client = chromadb.HttpClient(host=settings.CHROMA_HOST, port=settings.CHROMA_PORT)
-        client.heartbeat()
-        checks["chromadb"] = True
-    except Exception:
-        pass
+    # --- chromadb (optional: only when a vector store is configured) ---
+    if settings.CHROMA_HOST:
+        try:
+            client = chromadb.HttpClient(host=settings.CHROMA_HOST, port=settings.CHROMA_PORT)
+            await asyncio.to_thread(client.heartbeat)
+            checks["chromadb"] = True
+        except Exception:
+            checks["chromadb"] = False
 
-    try:
-        client = boto3.client("s3", endpoint_url=settings.S3_ENDPOINT_URL)
-        client.head_bucket(Bucket=settings.S3_BUCKET)
-        checks["minio"] = True
-    except Exception:
-        pass
+    # --- s3 / minio (optional: only when the S3 storage backend is selected) ---
+    if settings.STORAGE_BACKEND == "s3":
+        try:
+            client = boto3.client("s3", endpoint_url=settings.S3_ENDPOINT_URL or None)
+            await asyncio.to_thread(client.head_bucket, Bucket=settings.S3_BUCKET)
+            checks["minio"] = True
+        except Exception:
+            checks["minio"] = False
 
-    # Evaluations need the database and the task queue; vector store and object storage
-    # are optional (not used by the evaluation pipeline) and only reported.
-    required = ("database", "redis")
-    all_ready = all(checks[name] for name in required)
-    return {"ready": all_ready, "required": list(required), "checks": checks}
+    all_ready = all(required.values())
+    return {"ready": all_ready, "checks": checks, "required": required}
 
 
 @router.get("/metrics")
 async def metrics(
     current_user: TokenData = Depends(require_role(["admin"])),
 ):
-    from fastapi.responses import Response
     from prometheus_client import generate_latest
 
     return Response(content=generate_latest(), media_type="text/plain")

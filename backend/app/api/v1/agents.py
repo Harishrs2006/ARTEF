@@ -53,6 +53,27 @@ class TargetAgentUpdate(BaseModel):
     allowed: bool | None = None
     health_check_url: HttpUrl | None = None
 
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, v: str | None) -> str | None:
+        if v is not None and len(v) > 200:
+            raise ValueError("Name too long")
+        return v
+
+    @field_validator("timeout_seconds")
+    @classmethod
+    def validate_timeout(cls, v: int | None) -> int | None:
+        if v is not None and (v < 1 or v > 60):
+            raise ValueError("timeout must be 1-60")
+        return v
+
+    @field_validator("max_retries")
+    @classmethod
+    def validate_max_retries(cls, v: int | None) -> int | None:
+        if v is not None and (v < 0 or v > 5):
+            raise ValueError("max_retries must be 0-5")
+        return v
+
 
 def _sanitize_agent_response(agent, current_user: TokenData) -> dict:
     """Redact auth_config for viewer roles."""
@@ -100,6 +121,25 @@ class HealthCheckResponse(BaseModel):
     error: str | None = None
 
 
+class AgentTestResponse(BaseModel):
+    response: str
+    raw: dict = {}
+    latency_ms: int = 0
+
+
+def _extract_agent_text(raw) -> str:
+    """Pull the assistant text out of a target-agent response payload."""
+    if isinstance(raw, str):
+        return raw
+    if isinstance(raw, dict):
+        for key in ("response", "text", "content", "output", "message"):
+            value = raw.get(key)
+            if isinstance(value, str) and value:
+                return value
+        return str(raw)
+    return str(raw)
+
+
 @router.get("", response_model=list[TargetAgentResponse], include_in_schema=False)
 @router.get("/", response_model=list[TargetAgentResponse])
 async def list_agents(
@@ -130,7 +170,7 @@ async def create_agent(
         created_by=UUID(current_user.sub),
     )
     new_agent = await agent_repo.create(new_agent)
-    return TargetAgentResponse.model_validate(new_agent)
+    return TargetAgentResponse.model_validate(_sanitize_agent_response(new_agent, current_user))
 
 
 @router.get("/{agent_id}", response_model=TargetAgentResponse)
@@ -163,46 +203,62 @@ async def update_agent(
         setattr(agent, key, value)
 
     await agent_repo.session.flush()
-    return TargetAgentResponse.model_validate(agent)
+    return TargetAgentResponse.model_validate(_sanitize_agent_response(agent, current_user))
 
 
 class AgentTestRequest(BaseModel):
     input: str
 
 
-@router.post("/{agent_id}/test", response_model=HealthCheckResponse)
+@router.post("/{agent_id}/test", response_model=AgentTestResponse)
 async def test_agent(
     agent_id: UUID,
+    request: AgentTestRequest,
     agent_repo: TargetAgentRepository = Depends(get_agent_repo),
     current_user: TokenData = Depends(
         require_role(["admin", "safety_engineer", "ml_engineer", "qa_engineer"])
     ),
 ):
+    """Send a probe input to the target agent and return its actual reply."""
     agent = await agent_repo.get(agent_id)
     if not agent:
         raise NotFoundError("TargetAgent", str(agent_id))
 
     from app.providers.target_agent import TargetAgentProviderFactory
 
-    provider = TargetAgentProviderFactory.create_provider(
-        "http",
-        endpoint_url=agent.endpoint_url,
-        auth_config=agent.auth_config,
-        request_template=agent.request_template,
-        response_extraction=agent.response_extraction,
-        timeout=agent.timeout_seconds,
-        max_retries=agent.max_retries,
-    )
+    try:
+        provider = TargetAgentProviderFactory.create_provider(
+            "http",
+            endpoint_url=agent.endpoint_url,
+            auth_config=agent.auth_config,
+            request_template=agent.request_template,
+            response_extraction=agent.response_extraction,
+            timeout=agent.timeout_seconds,
+            max_retries=agent.max_retries,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid target agent configuration: {e}") from e
+
+    import time
 
     try:
-        import time
-
         start = time.time()
-        healthy = await provider.health_check()
+        raw = await provider.call(request.input)
         latency = int((time.time() - start) * 1000)
-        return HealthCheckResponse(healthy=healthy, latency_ms=latency)
+        return AgentTestResponse(
+            response=_extract_agent_text(raw),
+            raw=raw if isinstance(raw, dict) else {"response": str(raw)},
+            latency_ms=latency,
+        )
     except Exception as e:
-        return HealthCheckResponse(healthy=False, error=str(e))
+        raise HTTPException(status_code=502, detail=f"Target agent call failed: {e}") from e
+    finally:
+        close = getattr(provider, "close", None)
+        if close is not None:
+            try:
+                await close()
+            except Exception:
+                pass
 
 
 @router.post("/{agent_id}/call")
@@ -236,9 +292,16 @@ async def call_agent(
         start = time.time()
         response = await provider.call(request.input)
         latency = int((time.time() - start) * 1000)
-        return {"response": response, "latency_ms": latency}
+        return {"response": _extract_agent_text(response), "latency_ms": latency}
     except Exception as e:
-        raise HTTPException(status_code=502, detail=str(e))
+        raise HTTPException(status_code=502, detail=f"Target agent call failed: {e}") from e
+    finally:
+        close = getattr(provider, "close", None)
+        if close is not None:
+            try:
+                await close()
+            except Exception:
+                pass
 
 
 @router.delete("/{agent_id}")

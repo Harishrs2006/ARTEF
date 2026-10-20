@@ -1,8 +1,8 @@
-﻿from datetime import datetime
+from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 
 from app.api.deps import (
@@ -22,7 +22,6 @@ from app.repositories.baselines import (
     ReviewQueueRepository,
 )
 from app.repositories.runs import ResultRepository
-from app.services.audit import record_audit
 
 router = APIRouter()
 
@@ -39,6 +38,7 @@ class ReviewAssignRequest(BaseModel):
 class ReviewUpdateRequest(BaseModel):
     label: ReviewLabel | None = None
     notes: str | None = None
+    assigned_to: UUID | None = None
 
 
 class EvidenceItem(BaseModel):
@@ -86,8 +86,8 @@ class ReviewLabelResponse(BaseModel):
 @router.get("", response_model=list[ReviewResponse], include_in_schema=False)
 @router.get("/", response_model=list[ReviewResponse])
 async def list_reviews(
-    skip: int = 0,
-    limit: int = 100,
+    skip: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=1000),
     status: ReviewStatus | None = None,
     assignee_id: UUID | None = None,
     review_repo: ReviewQueueRepository = Depends(get_review_repo),
@@ -211,10 +211,6 @@ async def label_review(
     review.reviewer_notes = request.rationale
     review.resolved_at = datetime.utcnow()
     await review_repo.session.flush()
-    await record_audit(
-        review_repo.session, current_user.sub, "review.label", "review", review.id,
-        {"label": request.label.value, "rationale": request.rationale},
-    )
 
     if request.label == ReviewLabel.CONFIRMED_REGRESSION:
         regression = await regression_repo.get(review.regression_id)
@@ -261,7 +257,6 @@ async def update_review(
     review_id: UUID,
     update: ReviewUpdateRequest,
     review_repo: ReviewQueueRepository = Depends(get_review_repo),
-    label_repo: ReviewLabelRepository = Depends(get_review_label_repo),
     current_user: TokenData = Depends(require_role(["admin", "safety_engineer", "reviewer"])),
 ):
     review = await review_repo.get(review_id)
@@ -272,19 +267,6 @@ async def update_review(
         review.reviewer_notes = update.notes
     if update.label is not None:
         review.label = update.label
-        # Keep an immutable label history (FR-010), as POST /{id}/label does.
-        await label_repo.create(
-            ReviewLabelRecord(
-                review_id=review_id,
-                label=update.label,
-                reviewer_id=UUID(current_user.sub),
-                rationale=update.notes,
-            )
-        )
-        await record_audit(
-            review_repo.session, current_user.sub, "review.label", "review", review.id,
-            {"label": update.label.value, "notes": update.notes},
-        )
         if update.label in (
             ReviewLabel.CONFIRMED_REGRESSION,
             ReviewLabel.FALSE_POSITIVE,
@@ -292,6 +274,8 @@ async def update_review(
         ):
             review.status = ReviewStatus.RESOLVED
             review.resolved_at = datetime.utcnow()
+    if update.assigned_to is not None:
+        review.assigned_to = str(update.assigned_to)
     review.updated_at = datetime.utcnow()
     await review_repo.session.flush()
 

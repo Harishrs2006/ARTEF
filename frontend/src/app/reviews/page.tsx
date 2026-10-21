@@ -1,21 +1,21 @@
-﻿"use client";
+"use client";
 
-import { useEffect, useState, useCallback } from "react";
-import { useRouter } from "next/navigation";
+import { useEffect, useState, useCallback, useMemo } from "react";
+
 import { DashboardLayout } from "@/components/ui/dashboard-layout";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue, SELECT_ALL_VALUE } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { api } from "@/lib/api";
+import { api, handleApiError } from "@/lib/api";
 import { formatDate, getSeverityColor } from "@/lib/utils";
-import { useAuth, getAccessToken } from "@/lib/auth";
-import { Eye, Edit, Filter, AlertTriangle, CheckCircle, XCircle, AlertCircle, Flag, FileText, Code, Copy, ChevronDown, ChevronUp, Search, RefreshCw } from "lucide-react";
+import { useAuthGuard } from "@/hooks/useAuthGuard";
+import { Eye, Edit, AlertTriangle, CheckCircle, AlertCircle, Flag, FileText, Copy, ChevronDown, ChevronUp, RefreshCw } from "lucide-react";
 
 interface EvidenceItem {
   source: string;
@@ -33,11 +33,11 @@ interface ReviewItem {
   status: string;
   label: string | null;
   assigned_to: string | null;
-  reviewed_by: string | null;
-  reviewed_at: string | null;
-  notes: string | null;
+  /** The backend returns the reviewer's notes as `reviewer_notes`. */
+  reviewer_notes: string | null;
   created_at: string;
   updated_at: string;
+  resolved_at: string | null;
   run?: {
     id: string;
     suite_id: string;
@@ -56,15 +56,118 @@ interface ReviewItem {
   actual_response?: string;
   judge_output?: Record<string, any>;
 }
+/**
+ * The evidence/code viewers are defined at module scope on purpose.
+ *
+ * When they were declared inside the page component they received a new
+ * component identity on every render of the parent. React therefore
+ * unmounted and remounted their whole subtree on every parent render, which
+ * discarded the local `copied`/`expanded` state and re-rendered every
+ * evidence item.
+ */
+function EvidenceItemCard({ item, index }: { item: EvidenceItem; index: number }) {
+  const [copied, setCopied] = useState(false);
+  const [expanded, setExpanded] = useState(false);
+  const isLong = item.text.length > 500;
+
+  return (
+    <div className="border rounded-lg p-4 mb-3 bg-muted/30">
+      <div className="flex items-start justify-between gap-4 mb-2">
+        <div className="flex items-center gap-2">
+          <span className="font-mono text-xs text-muted-foreground">#{index + 1}</span>
+          <Badge variant="outline" className="text-xs">{item.source}</Badge>
+          {item.metadata && Object.keys(item.metadata).length > 0 && (
+            <Badge variant="secondary" className="text-xs">{Object.keys(item.metadata).length} metadata</Badge>
+          )}
+        </div>
+        <div className="flex items-center gap-1">
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={() => {
+              navigator.clipboard.writeText(item.text);
+              setCopied(true);
+              setTimeout(() => setCopied(false), 2000);
+            }}
+            title="Copy text"
+          >
+            <Copy className="h-3 w-3" />
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={() => setExpanded(!expanded)}
+            title={expanded ? "Collapse" : "Expand"}
+          >
+            {expanded ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
+          </Button>
+        </div>
+      </div>
+
+      <div className="font-mono text-sm whitespace-pre-wrap" style={{ maxHeight: expanded || !isLong ? 'none' : '200px', overflow: 'auto' }}>
+        {item.text}
+      </div>
+
+      {item.metadata && Object.keys(item.metadata).length > 0 && expanded && (
+        <details className="mt-2">
+          <summary className="text-xs text-muted-foreground cursor-pointer">Metadata</summary>
+          <pre className="mt-1 text-xs bg-background p-2 rounded overflow-auto">
+            {JSON.stringify(item.metadata, null, 2)}
+          </pre>
+        </details>
+      )}
+    </div>
+  );
+}
+
+function CodeViewer({
+  code,
+  title
+}: {
+  code: string | Record<string, any>;
+  title: string;
+  language?: string;
+}) {
+  const [copied, setCopied] = useState(false);
+  const codeString = typeof code === 'string' ? code : JSON.stringify(code, null, 2);
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-center justify-between">
+          <CardTitle>{title}</CardTitle>
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={() => {
+              navigator.clipboard.writeText(codeString);
+              setCopied(true);
+              setTimeout(() => setCopied(false), 2000);
+            }}
+            title="Copy"
+          >
+            <Copy className="h-4 w-4" />
+          </Button>
+        </div>
+      </CardHeader>
+      <CardContent>
+        <ScrollArea className="h-[400px] w-full">
+          <pre className="font-mono text-sm p-4 bg-muted rounded overflow-auto">
+            <code>{codeString}</code>
+          </pre>
+        </ScrollArea>
+      </CardContent>
+    </Card>
+  );
+}
 
 export default function ReviewsPage() {
-  const router = useRouter();
-  const { isAuthenticated, isLoading } = useAuth();
+  const { ready, authenticated } = useAuthGuard();
   const [reviews, setReviews] = useState<ReviewItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedReview, setSelectedReview] = useState<ReviewItem | null>(null);
-  const [filterStatus, setFilterStatus] = useState("");
-  const [filterSeverity, setFilterSeverity] = useState("");
+const [filterStatus, setFilterStatus] = useState(SELECT_ALL_VALUE);
+const [filterSeverity, setFilterSeverity] = useState(SELECT_ALL_VALUE);
   const [newLabel, setNewLabel] = useState("");
   const [newNotes, setNewNotes] = useState("");
   const [saving, setSaving] = useState(false);
@@ -82,7 +185,7 @@ export default function ReviewsPage() {
     
     try {
       const params = new URLSearchParams();
-      if (filterStatus) params.append("status", filterStatus);
+      if (filterStatus && filterStatus !== SELECT_ALL_VALUE) params.append("status", filterStatus);
       const res = await api.get(`/reviews${params.toString() ? `?${params.toString()}` : ""}`);
       const list = Array.isArray(res.data) ? res.data : [];
       setReviews(list);
@@ -94,7 +197,7 @@ export default function ReviewsPage() {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [filterStatus, filterSeverity]);
+  }, [filterStatus]);
 
   const fetchReviewDetails = useCallback(async (reviewId: string) => {
     try {
@@ -106,21 +209,19 @@ export default function ReviewsPage() {
   }, []);
 
   useEffect(() => {
-    const token = getAccessToken();
-    if (token) { fetchReviews(); return; }
-    if (!isLoading && !isAuthenticated) router.replace("/login");
-    else if (!isLoading && isAuthenticated) fetchReviews();
-  }, [isAuthenticated, isLoading, fetchReviews, router]);
+    if (!ready || !authenticated) return;
+    void fetchReviews();
+  }, [ready, authenticated, fetchReviews]);
 
   useEffect(() => {
-    if (!isAuthenticated || loading) return;
-    
+    if (!authenticated || loading) return;
+
     const interval = setInterval(() => {
       fetchReviews(true);
     }, 30000);
-    
+
     return () => clearInterval(interval);
-  }, [isAuthenticated, loading, fetchReviews]);
+  }, [authenticated, loading, fetchReviews]);
 
   const handleLabelReview = async (reviewId: string, label: string) => {
     setSaving(true);
@@ -138,14 +239,21 @@ export default function ReviewsPage() {
   };
 
   const handleAssign = async (reviewId: string) => {
-    const userId = prompt("Enter user ID to assign:");
-    if (userId) {
-      try {
-        await api.patch(`/reviews/${reviewId}`, { assigned_to: userId });
-        fetchReviews();
-      } catch (error) {
-        console.error("Failed to assign review:", error);
-      }
+    const userId = prompt("Enter the user ID to assign this review to:");
+    if (!userId) return;
+    const trimmed = userId.trim();
+    if (!/^[0-9a-fA-F-]{36}$/.test(trimmed)) {
+      setError("That does not look like a user ID (expected a UUID).");
+      return;
+    }
+    setError(null);
+    try {
+      // The assignment endpoint is POST /reviews/{id}/assign; sending
+      // `assigned_to` to the PATCH route was silently ignored by the backend.
+      await api.post(`/reviews/${reviewId}/assign`, { assignee_id: trimmed });
+      await fetchReviews();
+    } catch (err) {
+      setError(handleApiError(err));
     }
   };
 
@@ -158,11 +266,21 @@ export default function ReviewsPage() {
   const severities = ["critical", "high", "medium", "low"];
   const labels = ["confirmed_regression", "false_positive", "non_blocking", "needs_escalation"];
 
-  const filteredReviews = reviews.filter((review) => {
-    const matchesStatus = !filterStatus || review.status === filterStatus;
-    const matchesSeverity = !filterSeverity || review.severity === filterSeverity;
-    return matchesStatus && matchesSeverity;
-  });
+  const filteredReviews = useMemo(
+    () =>
+      reviews.filter((review) => {
+        const matchesStatus =
+          !filterStatus ||
+          filterStatus === SELECT_ALL_VALUE ||
+          review.status === filterStatus;
+        const matchesSeverity =
+          !filterSeverity ||
+          filterSeverity === SELECT_ALL_VALUE ||
+          review.severity === filterSeverity;
+        return matchesStatus && matchesSeverity;
+      }),
+    [reviews, filterStatus, filterSeverity]
+  );
 
   const getStatusBadge = (status: string) => {
     switch (status) {
@@ -185,171 +303,7 @@ export default function ReviewsPage() {
     }
   };
 
-  const EvidenceViewer = ({ 
-    evidence, 
-    title, 
-    searchTerm = "",
-    emptyMessage = "No evidence available"
-  }: { 
-    evidence: EvidenceItem[]; 
-    title: string;
-    searchTerm?: string;
-    emptyMessage?: string;
-  }) => {
-    const filteredEvidence = evidence.filter(e => 
-      e.text.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      e.source.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      JSON.stringify(e.metadata).toLowerCase().includes(searchTerm.toLowerCase())
-    );
-
-    if (filteredEvidence.length === 0) {
-      return (
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center justify-between">
-              {title}
-              <Badge variant="secondary">{filteredEvidence.length}</Badge>
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="text-center py-8 text-muted-foreground">
-            {emptyMessage}
-          </CardContent>
-        </Card>
-      );
-    }
-
-    return (
-      <Card>
-        <CardHeader>
-          <div className="flex items-center justify-between">
-            <CardTitle>{title}</CardTitle>
-            <div className="flex items-center gap-2">
-              <span className="text-sm text-muted-foreground">{filteredEvidence.length} items</span>
-              <input
-                type="text"
-                placeholder="Search evidence..."
-                value={searchTerm}
-                onChange={(e) => setEvidenceSearch(e.target.value)}
-                className="w-64 px-2 py-1 text-sm border rounded"
-              />
-            </div>
-          </div>
-        </CardHeader>
-        <CardContent>
-          {filteredEvidence.length === 0 ? (
-            <div className="text-center py-8 text-muted-foreground">
-              {emptyMessage}
-            </div>
-          ) : (
-            <div className="space-y-2">
-              {filteredEvidence.map((item, index) => (
-                <EvidenceItem key={`${item.source}-${index}`} item={item} index={index} />
-              ))}
-            </div>
-          )}
-        </CardContent>
-      </Card>
-    );
-  };
-
-  const EvidenceItem = ({ item, index }: { item: EvidenceItem; index: number }) => {
-    const [copied, setCopied] = useState(false);
-    const [expanded, setExpanded] = useState(false);
-    const isLong = item.text.length > 500;
-
-    return (
-      <div className="border rounded-lg p-4 mb-3 bg-muted/30">
-        <div className="flex items-start justify-between gap-4 mb-2">
-          <div className="flex items-center gap-2">
-            <span className="font-mono text-xs text-muted-foreground">#{index + 1}</span>
-            <Badge variant="outline" className="text-xs">{item.source}</Badge>
-            {item.metadata && Object.keys(item.metadata).length > 0 && (
-              <Badge variant="secondary" className="text-xs">{Object.keys(item.metadata).length} metadata</Badge>
-            )}
-          </div>
-          <div className="flex items-center gap-1">
-            <Button 
-              variant="ghost" 
-              size="icon" 
-              onClick={() => {
-                navigator.clipboard.writeText(item.text);
-                setCopied(true);
-                setTimeout(() => setCopied(false), 2000);
-              }}
-              title="Copy text"
-            >
-              <Copy className="h-3 w-3" />
-            </Button>
-            <Button 
-              variant="ghost" 
-              size="icon" 
-              onClick={() => setExpanded(!expanded)}
-              title={expanded ? "Collapse" : "Expand"}
-            >
-              {expanded ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
-            </Button>
-          </div>
-        </div>
-        
-        <div className="font-mono text-sm whitespace-pre-wrap" style={{ maxHeight: expanded || !isLong ? 'none' : '200px', overflow: 'auto' }}>
-          {item.text}
-        </div>
-
-        {item.metadata && Object.keys(item.metadata).length > 0 && expanded && (
-          <details className="mt-2">
-            <summary className="text-xs text-muted-foreground cursor-pointer">Metadata</summary>
-            <pre className="mt-1 text-xs bg-background p-2 rounded overflow-auto">
-              {JSON.stringify(item.metadata, null, 2)}
-            </pre>
-          </details>
-        )}
-      </div>
-    );
-  };
-
-  const CodeViewer = ({ 
-    code, 
-    title,
-    language = "json"
-  }: { 
-    code: string | Record<string, any>; 
-    title: string;
-    language?: string;
-  }) => {
-    const [copied, setCopied] = useState(false);
-    const codeString = typeof code === 'string' ? code : JSON.stringify(code, null, 2);
-
-    return (
-      <Card>
-        <CardHeader>
-          <div className="flex items-center justify-between">
-            <CardTitle>{title}</CardTitle>
-            <Button 
-              variant="ghost" 
-              size="icon" 
-              onClick={() => {
-                navigator.clipboard.writeText(codeString);
-                setCopied(true);
-                setTimeout(() => setCopied(false), 2000);
-              }}
-              title="Copy"
-            >
-              <Copy className="h-4 w-4" />
-            </Button>
-          </div>
-        </CardHeader>
-        <CardContent>
-          <ScrollArea className="h-[400px] w-full">
-            <pre className="font-mono text-sm p-4 bg-muted rounded overflow-auto">
-              <code>{codeString}</code>
-            </pre>
-          </ScrollArea>
-        </CardContent>
-      </Card>
-    );
-  };
-
-  if (isLoading && !getAccessToken()) {
+  if (!ready || !authenticated) {
     return (
       <DashboardLayout>
         <div className="flex h-[calc(100vh-4rem)] items-center justify-center">
@@ -391,14 +345,14 @@ export default function ReviewsPage() {
             <Select value={filterStatus} onValueChange={setFilterStatus}>
               <SelectTrigger className="w-48"><SelectValue placeholder="All statuses" /></SelectTrigger>
               <SelectContent>
-                <SelectItem value="">All statuses</SelectItem>
+                <SelectItem value={SELECT_ALL_VALUE}>All statuses</SelectItem>
                 {statuses.map((s) => <SelectItem key={s} value={s}>{s.replace("_", " ")}</SelectItem>)}
               </SelectContent>
             </Select>
             <Select value={filterSeverity} onValueChange={setFilterSeverity}>
               <SelectTrigger className="w-48"><SelectValue placeholder="All severities" /></SelectTrigger>
               <SelectContent>
-                <SelectItem value="">All severities</SelectItem>
+                <SelectItem value={SELECT_ALL_VALUE}>All severities</SelectItem>
                 {severities.map((s) => <SelectItem key={s} value={s}>{s}</SelectItem>)}
               </SelectContent>
             </Select>
@@ -531,7 +485,7 @@ export default function ReviewsPage() {
                       <div className="md:col-span-2">
                         <h4 className="font-medium mb-2">Notes</h4>
                         <Textarea
-                          value={selectedReview.notes || ""}
+                          value={selectedReview.reviewer_notes || ""}
                           onChange={(e) => setNewNotes(e.target.value)}
                           placeholder="Add review notes..."
                           rows={3}
@@ -545,11 +499,28 @@ export default function ReviewsPage() {
                     <div className="mt-4 space-y-4">
                       {selectedReview.evidence && selectedReview.evidence.length > 0 ? (
                         <>
-                          <h4 className="font-medium">All Evidence ({selectedReview.evidence.length} items)</h4>
+                          <div className="flex items-center justify-between gap-4">
+                            <h4 className="font-medium">All Evidence ({selectedReview.evidence.length} items)</h4>
+                            <input
+                              type="text"
+                              placeholder="Search evidence..."
+                              value={evidenceSearch}
+                              onChange={(e) => setEvidenceSearch(e.target.value)}
+                              className="w-64 px-2 py-1 text-sm border rounded"
+                              aria-label="Search evidence"
+                            />
+                          </div>
                           <div className="space-y-2">
-                            {selectedReview.evidence.map((item, index) => (
-                              <EvidenceItem key={`${item.source}-${index}`} item={item} index={index} />
-                            ))}
+                            {selectedReview.evidence
+                              .filter(
+                                (item) =>
+                                  !evidenceSearch ||
+                                  item.text.toLowerCase().includes(evidenceSearch.toLowerCase()) ||
+                                  item.source.toLowerCase().includes(evidenceSearch.toLowerCase())
+                              )
+                              .map((item, index) => (
+                                <EvidenceItemCard key={`${item.source}-${index}`} item={item} index={index} />
+                              ))}
                           </div>
                         </>
                       ) : (

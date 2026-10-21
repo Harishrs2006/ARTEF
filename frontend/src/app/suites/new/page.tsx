@@ -12,7 +12,7 @@ import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter } from "@/components/ui/dialog";
-import { api, handleApiError } from "@/lib/api";
+import { api } from "@/lib/api";
 import { ArrowLeft, Plus, Trash2, Upload, FileText, AlertCircle } from "lucide-react";
 
 interface TestCase {
@@ -26,22 +26,18 @@ interface TestCase {
   metadata: Record<string, unknown>;
 }
 
-// Must match backend TestCaseCategory (backend/app/domain/enums.py).
 const CATEGORIES = [
-  "smoke",
-  "safety",
   "jailbreak",
   "prompt_injection",
-  "pii",
-  "policy",
-  "refusal",
-  "tool_use",
-  "hallucination",
+  "harmful_content",
+  "pii_leak",
   "bias",
-  "adversarial",
-  "agent_tool_abuse",
-  "privilege_escalation",
-  "custom"
+  "hallucination",
+  "security",
+  "compliance",
+  "toxicity",
+  "misinformation",
+  "other"
 ];
 
 const SEVERITIES = [
@@ -51,32 +47,13 @@ const SEVERITIES = [
   "low"
 ];
 
-// Must match backend ExpectedBehaviorType. llm_rubric uses an LLM judge (EVAL_MODE=live).
 const BEHAVIOR_TYPES = [
-  "refusal",
   "exact_match",
   "regex_match",
   "keyword_match",
-  "llm_rubric"
+  "refusal_match",
+  "llm_judge"
 ];
-
-// Suite-file shape validated by the API (POST /suites).
-function toExpectedBehavior(type: string, matcher: Record<string, unknown>) {
-  if (type === "llm_rubric") {
-    return {
-      type,
-      rubric: {
-        criteria: [
-          {
-            name: "meets_expectation",
-            description: (matcher.description as string) || "The response is safe, appropriate and answers the request",
-          },
-        ],
-      },
-    };
-  }
-  return { type, matcher: { type, ...matcher } };
-}
 
 export default function NewSuitePage() {
   const router = useRouter();
@@ -94,7 +71,7 @@ export default function NewSuitePage() {
     category: "other",
     severity: "medium",
     input: "",
-    expected_behavior_type: "refusal",
+    expected_behavior_type: "refusal_match",
     expected_behavior_matcher: {},
     metadata: {}
   });
@@ -123,7 +100,7 @@ export default function NewSuitePage() {
       category: "other",
       severity: "medium",
       input: "",
-      expected_behavior_type: "refusal",
+      expected_behavior_type: "refusal_match",
       expected_behavior_matcher: {},
       metadata: {}
     });
@@ -141,9 +118,10 @@ export default function NewSuitePage() {
       formData.append("file", importFile);
 
       const endpoint = importFormat === "yaml" ? "/suites/import/yaml" : "/suites/import/json";
-      const response = await api.post(endpoint, formData, {
-        headers: { "Content-Type": "multipart/form-data" }
-      });
+      // The browser must set the multipart Content-Type itself so that the
+      // boundary parameter is included; setting it manually produces a
+      // malformed body the server cannot parse.
+      const response = await api.post(endpoint, formData);
 
       router.push(`/suites/${response.data.id}`);
     } catch (error) {
@@ -168,7 +146,8 @@ export default function NewSuitePage() {
           category: tc.category,
           severity: tc.severity,
           input: tc.input,
-          expected_behavior: toExpectedBehavior(tc.expected_behavior_type, tc.expected_behavior_matcher),
+          expected_behavior_type: tc.expected_behavior_type,
+          expected_behavior_matcher: tc.expected_behavior_matcher,
           metadata: tc.metadata
         }))
       };
@@ -177,7 +156,7 @@ export default function NewSuitePage() {
       router.push(`/suites/${response.data.id}`);
     } catch (error) {
       console.error("Failed to create suite:", error);
-      alert(`Failed to create suite: ${handleApiError(error)}`);
+      alert("Failed to create suite. Please try again.");
     } finally {
       setLoading(false);
     }
@@ -336,7 +315,7 @@ export default function NewSuitePage() {
                               placeholder="Exact text to match"
                               onChange={(e) => setNewCase({
                                 ...newCase,
-                                expected_behavior_matcher: { pattern: e.target.value }
+                                expected_behavior_matcher: { expected_text: e.target.value }
                               })}
                             />
                           </div>
@@ -539,8 +518,7 @@ export default function NewSuitePage() {
               <Button
                 className="w-full"
                 onClick={handleCreateSuite}
-                disabled={loading || !name.trim() || testCases.length === 0}
-                title={testCases.length === 0 ? "Add at least one test case" : undefined}
+                disabled={loading || !name.trim()}
               >
                 {loading ? "Creating..." : "Create Suite"}
               </Button>

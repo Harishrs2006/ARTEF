@@ -6,16 +6,16 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { api } from "@/lib/api";
-import { formatDate, getSeverityColor } from "@/lib/utils";
-import { useAuth, getAccessToken } from "@/lib/auth";
+import { api, handleApiError } from "@/lib/api";
+import { getSeverityColor } from "@/lib/utils";
+import { useAuthGuard } from "@/hooks/useAuthGuard";
 import { useParams, useRouter } from "next/navigation";
-import { Plus, Edit, Trash2, Download, Eye, Copy, AlertTriangle, Upload } from "lucide-react";
+import { Plus, Edit, Trash2, AlertTriangle, Upload } from "lucide-react";
 
 interface TestCase {
   id: string;
@@ -98,15 +98,12 @@ interface MainContentProps {
   setEditingCase: React.Dispatch<React.SetStateAction<TestCase | null>>;
   handleUpdateCase: () => Promise<void>;
   handleDeleteCase: (caseId: string) => Promise<void>;
-  suiteId: string;
-  fetchSuite: () => Promise<void>;
-  formatDate: (date: string) => string;
+  actionError: string | null;
   getSeverityColor: (severity: string) => string;
 }
 
 const MainContent = ({
   suite,
-  router,
   handleCreateVersion,
   showCreateCaseDialog,
   setShowCreateCaseDialog,
@@ -124,13 +121,16 @@ const MainContent = ({
   setEditingCase,
   handleUpdateCase,
   handleDeleteCase,
-  suiteId,
-  fetchSuite,
-  formatDate,
+  actionError,
   getSeverityColor,
 }: MainContentProps) => (
   !suite ? null : (
     <div className="p-6 space-y-6">
+      {actionError && (
+        <p className="flex items-center gap-1.5 text-sm text-destructive">
+          <AlertTriangle className="h-3.5 w-3.5" /> {actionError}
+        </p>
+      )}
       <div className="flex items-start justify-between">
         <div>
           <h1 className="text-3xl font-bold">{suite.name}</h1>
@@ -441,10 +441,11 @@ export default function SuiteDetailPage() {
   const router = useRouter();
   const params = useParams();
   const suiteId = params.id as string;
-  const { isAuthenticated, isLoading } = useAuth();
+  const { ready, authenticated } = useAuthGuard();
   const [suite, setSuite] = useState<TestSuite | null>(null);
   const [showCreateCaseDialog, setShowCreateCaseDialog] = useState(false);
   const [showImportDialog, setShowImportDialog] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
   const [importFormat, setImportFormat] = useState<"yaml" | "json">("yaml");
   const [importContent, setImportContent] = useState("");
   const [editingCase, setEditingCase] = useState<TestCase | null>(null);
@@ -468,19 +469,35 @@ export default function SuiteDetailPage() {
   }, [suiteId]);
 
   useEffect(() => {
-    fetchSuite();
-  }, [fetchSuite]);
+    if (!ready || !authenticated) return;
+    void fetchSuite();
+  }, [ready, authenticated, fetchSuite]);
 
   const handleCreateVersion = async () => {
+    setActionError(null);
     try {
-      await api.post(`/suites/${suiteId}/versions`, {});
-      fetchSuite();
+      // The endpoint takes the full suite definition; the current suite
+      // contents are replayed so the new version is a snapshot of them.
+      await api.post(`/suites/${suiteId}/versions`, {
+        name: suite?.name ?? "",
+        description: suite?.description ?? "",
+        test_cases: (suite?.test_cases ?? []).map((tc) => ({
+          test_case_id: tc.test_case_id,
+          category: tc.category,
+          severity: tc.severity,
+          input: tc.input,
+          expected_behavior: tc.expected_behavior ?? {},
+          metadata: tc.metadata ?? {},
+        })),
+      });
+      await fetchSuite();
     } catch (error) {
-      console.error("Failed to create version:", error);
+      setActionError(handleApiError(error));
     }
   };
 
   const handleCreateCase = async () => {
+    setActionError(null);
     try {
       await api.post(`/suites/${suiteId}/test-cases`, newCase);
       setShowCreateCaseDialog(false);
@@ -493,45 +510,60 @@ export default function SuiteDetailPage() {
         expected_behavior_matcher: {},
         metadata: {},
       });
-      fetchSuite();
+      await fetchSuite();
     } catch (error) {
-      console.error("Failed to create test case:", error);
+      setActionError(handleApiError(error));
     }
   };
 
   const handleUpdateCase = async () => {
     if (!editingCase) return;
+    setActionError(null);
     try {
-      await api.put(`/suites/${suiteId}/test-cases/${editingCase.id}`, editingCase);
+      // The API stores the behaviour as three fields; the UI receives it as a
+      // single `expected_behavior` object, so it is split back here.
+      const behavior = editingCase.expected_behavior ?? {};
+      await api.put(`/suites/${suiteId}/test-cases/${editingCase.id}`, {
+        test_case_id: editingCase.test_case_id,
+        category: editingCase.category,
+        severity: editingCase.severity,
+        input: editingCase.input,
+        expected_behavior_type: (behavior.type as string) ?? "",
+        expected_behavior_matcher: (behavior.matcher as Record<string, unknown>) ?? {},
+        metadata: editingCase.metadata,
+        is_active: editingCase.is_active,
+      });
       setEditingCase(null);
-      fetchSuite();
+      await fetchSuite();
     } catch (error) {
-      console.error("Failed to update test case:", error);
+      setActionError(handleApiError(error));
     }
   };
 
   const handleDeleteCase = async (caseId: string) => {
     if (!confirm("Are you sure you want to delete this test case?")) return;
+    setActionError(null);
     try {
       await api.delete(`/suites/${suiteId}/test-cases/${caseId}`);
-      fetchSuite();
+      await fetchSuite();
     } catch (error) {
-      console.error("Failed to delete test case:", error);
+      setActionError(handleApiError(error));
     }
   };
 
   const handleImport = async () => {
+    setActionError(null);
     try {
       await api.post(`/suites/${suiteId}/import`, { content: importContent, format: importFormat });
       setShowImportDialog(false);
       setImportContent("");
-      fetchSuite();
+      await fetchSuite();
     } catch (error) {
-      console.error("Failed to import suite:", error);
+      setActionError(handleApiError(error));
     }
   };
 
-  if (isLoading && !getAccessToken()) {
+  if (!ready || !authenticated) {
     return <LoadingScreen />;
   }
 
@@ -559,9 +591,7 @@ export default function SuiteDetailPage() {
     setEditingCase={setEditingCase}
     handleUpdateCase={handleUpdateCase}
     handleDeleteCase={handleDeleteCase}
-    suiteId={suiteId}
-    fetchSuite={fetchSuite}
-    formatDate={formatDate}
+    actionError={actionError}
     getSeverityColor={getSeverityColor}
   />;
 }

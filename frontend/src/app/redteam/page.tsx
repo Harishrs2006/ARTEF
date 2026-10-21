@@ -1,7 +1,7 @@
-﻿"use client";
+"use client";
 
 import { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
+
 import { DashboardLayout } from "@/components/ui/dashboard-layout";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -10,8 +10,8 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { api } from "@/lib/api";
-import { useAuth, getAccessToken } from "@/lib/auth";
-import { Plus, Loader2, Download, Shield, Zap, FileText, RefreshCw, AlertTriangle } from "lucide-react";
+import { useAuthGuard } from "@/hooks/useAuthGuard";
+import { Loader2, Download, Shield, Zap, FileText, RefreshCw, AlertTriangle } from "lucide-react";
 
 interface AttackCandidate {
   test_case_id: string;
@@ -47,8 +47,7 @@ interface TargetAgent {
 }
 
 export default function RedTeamPage() {
-  const router = useRouter();
-  const { isAuthenticated, isLoading } = useAuth();
+  const { ready, authenticated } = useAuthGuard();
   const [agents, setAgents] = useState<TargetAgent[]>([]);
   const [loading, setLoading] = useState(true);
   const [generating, setGenerating] = useState(false);
@@ -100,25 +99,21 @@ export default function RedTeamPage() {
   };
 
   useEffect(() => {
-    const token = getAccessToken();
-    if (!token) {
-      router.replace("/login");
-    } else {
-      fetchData();
-      fetchAttackHistory();
-    }
-  }, [router]);
+    if (!ready || !authenticated) return;
+    void fetchData();
+    void fetchAttackHistory();
+  }, [ready, authenticated]);
 
   useEffect(() => {
-    if (!isAuthenticated || loading) return;
-    
+    if (!authenticated || loading) return;
+
     const interval = setInterval(() => {
       fetchData(true);
       fetchAttackHistory();
     }, 30000);
-    
+
     return () => clearInterval(interval);
-  }, [isAuthenticated, loading]);
+  }, [authenticated, loading]);
 
   const handleGenerate = async () => {
     if (!category) return;
@@ -174,7 +169,7 @@ export default function RedTeamPage() {
     { value: "privilege_escalation", label: "Privilege Escalation" },
   ];
 
-  if (isLoading && !getAccessToken()) {
+  if (!ready || !authenticated) {
     return (
       <DashboardLayout>
         <div className="flex h-[calc(100vh-4rem)] items-center justify-center">

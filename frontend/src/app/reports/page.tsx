@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
-import { useRouter } from "next/navigation";
+
 import { DashboardLayout } from "@/components/ui/dashboard-layout";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -9,10 +9,10 @@ import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { api } from "@/lib/api";
+import { api, handleApiError } from "@/lib/api";
 import { formatDate, formatDuration, formatCost } from "@/lib/utils";
-import { useAuth, getAccessToken } from "@/lib/auth";
-import { Download, FileText, BarChart, TrendingUp, AlertTriangle, CheckCircle, ArrowLeft, Plus } from "lucide-react";
+import { useAuthGuard } from "@/hooks/useAuthGuard";
+import { Download, FileText, BarChart, TrendingUp, AlertTriangle, CheckCircle, Plus } from "lucide-react";
 
 interface Report {
   id: string;
@@ -43,8 +43,7 @@ interface RunSummary {
 }
 
 export default function ReportsPage() {
-  const router = useRouter();
-  const { isAuthenticated, isLoading } = useAuth();
+  const { ready, authenticated } = useAuthGuard();
   const [reports, setReports] = useState<Report[]>([]);
   const [runs, setRuns] = useState<RunSummary[]>([]);
   const [loading, setLoading] = useState(true);
@@ -52,6 +51,7 @@ export default function ReportsPage() {
   const [selectedRun, setSelectedRun] = useState<RunSummary | null>(null);
   const [reportFormat, setReportFormat] = useState<"json" | "markdown" | "html">("markdown");
   const [generating, setGenerating] = useState(false);
+const [error, setError] = useState<string | null>(null);
 
   const fetchReports = useCallback(async () => {
     try {
@@ -76,33 +76,25 @@ export default function ReportsPage() {
   }, []);
 
   useEffect(() => {
-    const token = getAccessToken();
-    if (token) {
-      fetchReports();
-      fetchRuns();
-      return;
-    }
-    if (!isLoading && !isAuthenticated) {
-      router.replace("/login");
-    } else if (!isLoading && isAuthenticated) {
-      fetchReports();
-      fetchRuns();
-    }
-  }, [isAuthenticated, isLoading, fetchReports, fetchRuns, router]);
+    if (!ready || !authenticated) return;
+    void fetchReports();
+    void fetchRuns();
+  }, [ready, authenticated, fetchReports, fetchRuns]);
 
   const handleGenerateReport = async () => {
     if (!selectedRun) return;
     setGenerating(true);
+    setError(null);
     try {
       await api.post("/reports", {
         run_id: selectedRun.id,
         format: reportFormat,
         type: "full",
       });
-      fetchReports();
+      await fetchReports();
       setSelectedRun(null);
-    } catch (error) {
-      console.error("Failed to generate report:", error);
+    } catch (err) {
+      setError(handleApiError(err));
     } finally {
       setGenerating(false);
     }
@@ -120,7 +112,7 @@ export default function ReportsPage() {
     URL.revokeObjectURL(url);
   };
 
-  if (isLoading && !getAccessToken()) {
+  if (!ready || !authenticated) {
     return (
       <DashboardLayout>
         <div className="flex h-[calc(100vh-4rem)] items-center justify-center">

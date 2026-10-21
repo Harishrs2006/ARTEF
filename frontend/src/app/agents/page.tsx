@@ -1,21 +1,21 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
-import { useRouter } from "next/navigation";
+import { useEffect, useState, useCallback, useMemo } from "react";
+
 import { DashboardLayout } from "@/components/ui/dashboard-layout";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Badge } from "@/components/ui/badge";
+
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { api } from "@/lib/api";
+import { api, handleApiError } from "@/lib/api";
 import { formatDate } from "@/lib/utils";
-import { useAuth, getAccessToken } from "@/lib/auth";
+import { useAuthGuard } from "@/hooks/useAuthGuard";
 import {
-  Plus, Edit, Trash2, Wifi, WifiOff, RefreshCw, AlertTriangle,
+  Plus, Edit, Trash2, WifiOff, RefreshCw, AlertTriangle,
   Search, CheckCircle2, XCircle, Clock, Shield, ShieldOff, Activity,
   Globe, Zap, Settings2, ChevronDown, ChevronRight, Copy,
   Filter, Server, FlaskConical,
@@ -300,8 +300,7 @@ function AgentCard({
 }
 
 export default function AgentsPage() {
-  const router = useRouter();
-  const { isAuthenticated, isLoading } = useAuth();
+  const { ready, authenticated } = useAuthGuard();
   const [agents, setAgents] = useState<TargetAgent[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
@@ -315,8 +314,9 @@ export default function AgentsPage() {
   const [error, setError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [newAgent, setNewAgent] = useState(defaultNewAgent);
-  const [creating, setCreating] = useState(false);
-  const [updating, setUpdating] = useState(false);
+const [creating, setCreating] = useState(false);
+const [updating, setUpdating] = useState(false);
+const [actionError, setActionError] = useState<string | null>(null);
 
   const fetchAgents = useCallback(async (isRefresh = false) => {
     if (isRefresh) setRefreshing(true);
@@ -335,17 +335,15 @@ export default function AgentsPage() {
   }, []);
 
   useEffect(() => {
-    const token = getAccessToken();
-    if (token) { fetchAgents(); return; }
-    if (!isLoading && !isAuthenticated) router.replace("/login");
-    else if (!isLoading && isAuthenticated) fetchAgents();
-  }, [isAuthenticated, isLoading, fetchAgents, router]);
+    if (!ready || !authenticated) return;
+    void fetchAgents();
+  }, [ready, authenticated, fetchAgents]);
 
   useEffect(() => {
-    if (!isAuthenticated || loading) return;
+    if (!authenticated || loading) return;
     const interval = setInterval(() => fetchAgents(true), 30000);
     return () => clearInterval(interval);
-  }, [isAuthenticated, loading, fetchAgents]);
+  }, [authenticated, loading, fetchAgents]);
 
   const handleCreateAgent = async () => {
     if (!newAgent.name.trim() || !newAgent.endpoint_url.trim()) return;
@@ -361,16 +359,33 @@ export default function AgentsPage() {
   const handleUpdateAgent = async () => {
     if (!editingAgent) return;
     setUpdating(true);
+    setActionError(null);
     try {
-      await api.put(`/agents/${editingAgent.id}`, editingAgent);
+      // The backend exposes PATCH for partial updates; PUT returned 405.
+      await api.patch(`/agents/${editingAgent.id}`, {
+        name: editingAgent.name,
+        description: editingAgent.description,
+        endpoint_url: editingAgent.endpoint_url,
+        timeout_seconds: editingAgent.timeout_seconds,
+        max_retries: editingAgent.max_retries,
+        allowed: editingAgent.allowed,
+      });
       setEditingAgent(null);
-      fetchAgents();
-    } catch {} finally { setUpdating(false); }
+      await fetchAgents();
+    } catch (error) {
+      setActionError(handleApiError(error));
+    } finally { setUpdating(false); }
   };
 
   const handleDeleteAgent = async (agentId: string) => {
     if (!confirm("Are you sure you want to delete this agent? This action cannot be undone.")) return;
-    try { await api.delete(`/agents/${agentId}`); fetchAgents(); } catch {}
+    setActionError(null);
+    try {
+      await api.delete(`/agents/${agentId}`);
+      await fetchAgents();
+    } catch (error) {
+      setActionError(handleApiError(error));
+    }
   };
 
   const handleTestAgent = (agent: TargetAgent) => {
@@ -390,26 +405,42 @@ export default function AgentsPage() {
     } finally { setTestLoading(false); }
   };
 
-  const filteredAgents = agents.filter((agent) => {
-    const matchesSearch =
-      agent.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      (agent.description?.toLowerCase().includes(searchQuery.toLowerCase()) ?? false) ||
-      agent.endpoint_url.toLowerCase().includes(searchQuery.toLowerCase());
-    const matchesStatus =
-      statusFilter === "all" ||
-      (statusFilter === "active" && agent.status === "active") ||
-      (statusFilter === "inactive" && agent.status !== "active") ||
-      (statusFilter === "allowed" && agent.allowed) ||
-      (statusFilter === "blocked" && !agent.allowed);
-    return matchesSearch && matchesStatus;
-  });
+  // The filter and the four counters were recomputed on every render, so
+  // every keystroke in the search box walked the whole agent list five
+  // times.
+  const filteredAgents = useMemo(() => {
+    const query = searchQuery.toLowerCase();
+    return agents.filter((agent) => {
+      const matchesSearch =
+        agent.name.toLowerCase().includes(query) ||
+        (agent.description?.toLowerCase().includes(query) ?? false) ||
+        agent.endpoint_url.toLowerCase().includes(query);
+      const matchesStatus =
+        statusFilter === "all" ||
+        (statusFilter === "active" && agent.status === "active") ||
+        (statusFilter === "inactive" && agent.status !== "active") ||
+        (statusFilter === "allowed" && agent.allowed) ||
+        (statusFilter === "blocked" && !agent.allowed);
+      return matchesSearch && matchesStatus;
+    });
+  }, [agents, searchQuery, statusFilter]);
 
-  const totalAgents = agents.length;
-  const activeAgents = agents.filter((a) => a.status === "active").length;
-  const allowedAgents = agents.filter((a) => a.allowed).length;
-  const blockedAgents = agents.filter((a) => !a.allowed).length;
+  const agentCounts = useMemo(
+    () => ({
+      total: agents.length,
+      active: agents.filter((a) => a.status === "active").length,
+      allowed: agents.filter((a) => a.allowed).length,
+      blocked: agents.filter((a) => !a.allowed).length,
+    }),
+    [agents]
+  );
 
-  if (isLoading && !getAccessToken()) {
+  const totalAgents = agentCounts.total;
+  const activeAgents = agentCounts.active;
+  const allowedAgents = agentCounts.allowed;
+  const blockedAgents = agentCounts.blocked;
+
+  if (!ready || !authenticated) {
     return (
       <DashboardLayout>
         <div className="flex h-[calc(100vh-4rem)] items-center justify-center">
@@ -438,6 +469,11 @@ export default function AgentsPage() {
             {error && (
               <p className="mt-2 text-sm text-destructive flex items-center gap-1.5">
                 <AlertTriangle className="h-3.5 w-3.5" /> {error}
+              </p>
+            )}
+            {actionError && (
+              <p className="mt-2 text-sm text-destructive flex items-center gap-1.5">
+                <AlertTriangle className="h-3.5 w-3.5" /> {actionError}
               </p>
             )}
           </div>

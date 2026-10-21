@@ -1,28 +1,49 @@
-﻿"use client";
+"use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useMemo } from "react";
+import dynamic from "next/dynamic";
 import { useRouter } from "next/navigation";
 import { DashboardLayout } from "@/components/ui/dashboard-layout";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { api } from "@/lib/api";
 import { formatDate, formatDuration, formatCost, getStatusColor } from "@/lib/utils";
-import { useAuth, getAccessToken } from "@/lib/auth";
+import { useAsyncResource } from "@/hooks/useAsyncResource";
+import { useAuthGuard } from "@/hooks/useAuthGuard";
 import {
-  BarChart,
-  Bar,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip,
-  ResponsiveContainer,
-  LineChart,
-  Line,
-  PieChart,
-  Pie,
-  Cell,
-} from "recharts";
-import { Plus, TrendingUp, TrendingDown, Target, AlertTriangle, CheckCircle, DollarSign, Clock, RefreshCw, AlertCircle } from "lucide-react";
+  Plus,
+  TrendingUp,
+  Target,
+  AlertTriangle,
+  CheckCircle,
+  DollarSign,
+  Clock,
+  RefreshCw,
+  AlertCircle,
+} from "lucide-react";
+
+// Recharts is a large dependency tree. Loading the charts on demand keeps it
+// out of the initial route payload.
+const PassRateChart = dynamic(
+  () => import("@/components/charts").then((m) => m.PassRateChart),
+  { ssr: false, loading: () => <ChartSkeleton /> }
+);
+const RegressionChart = dynamic(
+  () => import("@/components/charts").then((m) => m.RegressionChart),
+  { ssr: false, loading: () => <ChartSkeleton /> }
+);
+const CostChart = dynamic(
+  () => import("@/components/charts").then((m) => m.CostChart),
+  { ssr: false, loading: () => <ChartSkeleton /> }
+);
+const SeverityChart = dynamic(
+  () => import("@/components/charts").then((m) => m.SeverityChart),
+  { ssr: false, loading: () => <ChartSkeleton /> }
+);
+
+function ChartSkeleton() {
+  return <div className="h-full w-full animate-pulse rounded-md bg-muted/40" />;
+}
 
 interface RunSummary {
   id: string;
@@ -57,108 +78,112 @@ interface Stats {
   cost_trend: number[];
 }
 
+interface MonitoringSnapshot {
+  total_alerts?: number;
+  uptime_seconds?: number;
+  recent_alerts?: unknown[];
+}
+
+interface DashboardData {
+  stats: Stats | null;
+  recentRuns: RunSummary[];
+  monitoring: MonitoringSnapshot | null;
+}
+
+const POLL_INTERVAL_MS = 30_000;
+
 export default function DashboardPage() {
   const router = useRouter();
-  const [mounted, setMounted] = useState(false);
-  const [stats, setStats] = useState<Stats | null>(null);
-  const [recentRuns, setRecentRuns] = useState<RunSummary[]>([]);
-  const [systemHealth, setSystemHealth] = useState<{
-    status: "Healthy" | "Degraded" | "Offline";
-    message: string;
-  }>({
-    status: "Healthy",
-    message: "Checking services...",
-  });
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [refreshing, setRefreshing] = useState(false);
-  const [isClient, setIsClient] = useState(false);
+  const { ready, authenticated } = useAuthGuard();
 
-  const fetchData = useCallback(async () => {
-    try {
-      setError(null);
-      
-      const [statsRes, runsRes, healthRes] = await Promise.all([
-        api.get("/runs/stats").catch(() => ({ data: getEmptyStats() })),
-        api.get("/runs?limit=5").catch(() => ({ data: [] })),
-        api.get("/monitoring/dashboard").catch(() => api.get("/").catch(() => null)),
+  const { data, loading, error, refresh } = useAsyncResource<DashboardData>(
+    async (signal) => {
+      // All three requests are independent, so they are issued in parallel.
+      // A failing endpoint degrades that single card instead of blanking the
+      // whole dashboard.
+      const [statsResult, runsResult, monitoringResult] = await Promise.allSettled([
+        api.get<Stats>("/runs/stats", { signal }),
+        api.get<RunSummary[]>("/runs?limit=5", { signal }),
+        api.get<MonitoringSnapshot>("/monitoring/dashboard", { signal }),
       ]);
-      
-      setStats(statsRes.data);
-      setRecentRuns(Array.isArray(runsRes.data) ? runsRes.data : runsRes.data.items || []);
 
-      if (healthRes && healthRes.data) {
-        const isHealthy = healthRes.data.status === "running" || healthRes.data.total_alerts !== undefined;
-        setSystemHealth({
-          status: isHealthy ? "Healthy" : "Degraded",
-          message: healthRes.data.version ? `v${healthRes.data.version} active` : "All services operational",
-        });
-      } else {
-        setSystemHealth({
-          status: "Healthy",
-          message: "API connected",
-        });
+      const stats = statsResult.status === "fulfilled" ? statsResult.value.data : null;
+      const runs =
+        runsResult.status === "fulfilled"
+          ? Array.isArray(runsResult.value.data)
+            ? runsResult.value.data
+            : (runsResult.value.data as unknown as { items?: RunSummary[] })?.items ?? []
+          : [];
+      const monitoring =
+        monitoringResult.status === "fulfilled" ? monitoringResult.value.data : null;
+
+      if (statsResult.status === "rejected" && runsResult.status === "rejected") {
+        throw statsResult.reason;
       }
-    } catch (error) {
-      console.error("Failed to fetch dashboard data:", error);
-      setError("Failed to load dashboard data. Please check your connection and try again.");
-      setStats(getEmptyStats());
-      setRecentRuns([]);
-      setSystemHealth({
-        status: "Offline",
-        message: "API unreachable",
-      });
-    } finally {
-      setLoading(false);
-      setRefreshing(false);
+
+      return { stats, recentRuns: runs, monitoring };
+    },
+    [],
+    { enabled: ready && authenticated, pollIntervalMs: POLL_INTERVAL_MS }
+  );
+
+  const stats = data?.stats ?? null;
+  const recentRuns = data?.recentRuns ?? [];
+
+  const systemHealth = useMemo(() => {
+    if (!authenticated) {
+      return { status: "Offline" as const, message: "Not authenticated" };
     }
-  }, []);
-
-  const getEmptyStats = (): Stats => ({
-    total_runs: 0,
-    pass_rate: 0,
-    total_regressions: 0,
-    critical_findings: 0,
-    review_queue_count: 0,
-    avg_runtime: 0,
-    total_cost: 0,
-    high_count: 0,
-    medium_count: 0,
-    low_count: 0,
-    pass_rate_trend: [],
-    regression_trend: [],
-    cost_trend: [],
-  });
-
-  const handleRefresh = () => {
-    setRefreshing(true);
-    fetchData();
-  };
-
-  useEffect(() => {
-    setMounted(true);
-    setIsClient(true);
-  }, []);
-
-  useEffect(() => {
-    if (!isClient) return;
-    const token = getAccessToken();
-    if (!token) {
-      router.replace("/login");
-    } else {
-      fetchData();
+    if (error) {
+      return { status: "Offline" as const, message: "API unreachable" };
     }
-  }, [isClient, fetchData, router]);
+    if (!data) {
+      return { status: "Degraded" as const, message: "Checking services..." };
+    }
+    if (data.monitoring === null) {
+      return { status: "Degraded" as const, message: "Monitoring endpoint unavailable" };
+    }
+    const alerts = data.monitoring.total_alerts ?? 0;
+    if (alerts > 0) {
+      return {
+        status: "Degraded" as const,
+        message: `${alerts} active alert${alerts === 1 ? "" : "s"}`,
+      };
+    }
+    const uptime = data.monitoring.uptime_seconds;
+    return {
+      status: "Healthy" as const,
+      message: uptime && uptime > 0 ? `Uptime ${Math.floor(uptime / 60)}m` : "All services operational",
+    };
+  }, [data, error, authenticated]);
 
-  useEffect(() => {
-    if (!mounted || !isClient || !getAccessToken() || loading) return;
-    const interval = setInterval(() => {
-      fetchData();
-    }, 30000);
-    return () => clearInterval(interval);
-  }, [mounted, isClient, loading, fetchData]);
+  const passRateData = useMemo(
+    () => (stats?.pass_rate_trend ?? []).map((value, index) => ({ name: `Run ${index + 1}`, value })),
+    [stats?.pass_rate_trend]
+  );
 
-  if (!mounted || !isClient || loading) {
+  const regressionData = useMemo(
+    () => (stats?.regression_trend ?? []).map((value, index) => ({ name: `Run ${index + 1}`, value })),
+    [stats?.regression_trend]
+  );
+
+  const costData = useMemo(
+    () => (stats?.cost_trend ?? []).map((value, index) => ({ name: `Run ${index + 1}`, value })),
+    [stats?.cost_trend]
+  );
+
+  const severityData = useMemo(
+    () =>
+      [
+        { name: "Critical", value: stats?.critical_findings || 0, color: "#ef4444" },
+        { name: "High", value: stats?.high_count || 0, color: "#f97316" },
+        { name: "Medium", value: stats?.medium_count || 0, color: "#eab308" },
+        { name: "Low", value: stats?.low_count || 0, color: "#3b82f6" },
+      ].filter((d) => d.value > 0),
+    [stats?.critical_findings, stats?.high_count, stats?.medium_count, stats?.low_count]
+  );
+
+  if (!ready || !authenticated) {
     return (
       <DashboardLayout>
         <div className="flex h-[calc(100vh-4rem)] items-center justify-center">
@@ -167,34 +192,6 @@ export default function DashboardPage() {
       </DashboardLayout>
     );
   }
-
-  const passRateData = stats?.pass_rate_trend && stats.pass_rate_trend.length > 0
-    ? stats.pass_rate_trend.map((value, index) => ({
-        name: `Run ${index + 1}`,
-        value,
-      }))
-    : [];
-
-  const regressionData = stats?.regression_trend && stats.regression_trend.length > 0
-    ? stats.regression_trend.map((value, index) => ({
-        name: `Run ${index + 1}`,
-        value,
-      }))
-    : [];
-
-  const costData = stats?.cost_trend && stats.cost_trend.length > 0
-    ? stats.cost_trend.map((value, index) => ({
-        name: `Run ${index + 1}`,
-        value,
-      }))
-    : [];
-
-  const severityData = [
-    { name: "Critical", value: stats?.critical_findings || 0, color: "#ef4444" },
-    { name: "High", value: stats?.high_count || 0, color: "#f97316" },
-    { name: "Medium", value: stats?.medium_count || 0, color: "#eab308" },
-    { name: "Low", value: stats?.low_count || 0, color: "#3b82f6" },
-  ].filter((d) => d.value > 0);
 
   return (
     <DashboardLayout>
@@ -208,12 +205,13 @@ export default function DashboardPage() {
             <Button
               variant="outline"
               size="icon"
-              onClick={handleRefresh}
-              disabled={refreshing}
+              onClick={() => void refresh()}
+              disabled={loading}
+              aria-label="Refresh dashboard"
             >
-              <RefreshCw className={`h-4 w-4 ${refreshing ? 'animate-spin' : ''}`} />
+              <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
             </Button>
-            <Button onClick={() => window.location.href = "/runs/new"}>
+            <Button onClick={() => router.push("/runs/new")}>
               <Plus className="mr-2 h-4 w-4" />
               New Evaluation
             </Button>
@@ -317,13 +315,15 @@ export default function DashboardPage() {
               )}
             </CardHeader>
             <CardContent>
-              <div className={`text-2xl font-bold ${
-                systemHealth.status === "Healthy"
-                  ? "text-green-600"
-                  : systemHealth.status === "Degraded"
-                  ? "text-yellow-600"
-                  : "text-red-600"
-              }`}>
+              <div
+                className={`text-2xl font-bold ${
+                  systemHealth.status === "Healthy"
+                    ? "text-green-600"
+                    : systemHealth.status === "Degraded"
+                      ? "text-yellow-600"
+                      : "text-red-600"
+                }`}
+              >
                 {systemHealth.status}
               </div>
               <p className="text-xs text-muted-foreground">{systemHealth.message}</p>
@@ -347,15 +347,7 @@ export default function DashboardPage() {
                     </div>
                   </div>
                 ) : (
-                  <ResponsiveContainer width="100%" height="100%">
-                    <LineChart data={passRateData}>
-                      <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
-                      <XAxis dataKey="name" className="text-xs" />
-                      <YAxis className="text-xs" domain={[0, 100]} />
-                      <Tooltip contentStyle={{ backgroundColor: "hsl(var(--card))", border: "1px solid hsl(var(--border))", borderRadius: "8px" }} />
-                      <Line type="monotone" dataKey="value" stroke="hsl(var(--primary))" strokeWidth={2} dot={{ r: 4 }} />
-                    </LineChart>
-                  </ResponsiveContainer>
+                  <PassRateChart data={passRateData} />
                 )}
               </div>
             </CardContent>
@@ -376,15 +368,7 @@ export default function DashboardPage() {
                     </div>
                   </div>
                 ) : (
-                  <ResponsiveContainer width="100%" height="100%">
-                    <BarChart data={regressionData}>
-                      <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
-                      <XAxis dataKey="name" className="text-xs" />
-                      <YAxis className="text-xs" />
-                      <Tooltip contentStyle={{ backgroundColor: "hsl(var(--card))", border: "1px solid hsl(var(--border))", borderRadius: "8px" }} />
-                      <Bar dataKey="value" fill="hsl(var(--destructive))" radius={[4, 4, 0, 0]} />
-                    </BarChart>
-                  </ResponsiveContainer>
+                  <RegressionChart data={regressionData} />
                 )}
               </div>
             </CardContent>
@@ -405,15 +389,7 @@ export default function DashboardPage() {
                     </div>
                   </div>
                 ) : (
-                  <ResponsiveContainer width="100%" height="100%">
-                    <LineChart data={costData}>
-                      <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
-                      <XAxis dataKey="name" className="text-xs" />
-                      <YAxis className="text-xs" />
-                      <Tooltip contentStyle={{ backgroundColor: "hsl(var(--card))", border: "1px solid hsl(var(--border))", borderRadius: "8px" }} />
-                      <Line type="monotone" dataKey="value" stroke="hsl(var(--secondary-foreground))" strokeWidth={2} dot={{ r: 4 }} />
-                    </LineChart>
-                  </ResponsiveContainer>
+                  <CostChart data={costData} />
                 )}
               </div>
             </CardContent>
@@ -434,27 +410,7 @@ export default function DashboardPage() {
                     </div>
                   </div>
                 ) : (
-                  <ResponsiveContainer width="100%" height="100%">
-                    <PieChart>
-                      <Pie
-                        data={severityData}
-                        cx="50%"
-                        cy="50%"
-                        innerRadius={60}
-                        outerRadius={100}
-                        paddingAngle={2}
-                        dataKey="value"
-                        nameKey="name"
-                        label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}
-                        labelLine={false}
-                      >
-                        {severityData.map((entry, index) => (
-                          <Cell key={`cell-${index}`} fill={entry.color} />
-                        ))}
-                      </Pie>
-                      <Tooltip contentStyle={{ backgroundColor: "hsl(var(--card))", border: "1px solid hsl(var(--border))", borderRadius: "8px" }} />
-                    </PieChart>
-                  </ResponsiveContainer>
+                  <SeverityChart data={severityData} />
                 )}
               </div>
             </CardContent>
@@ -466,7 +422,7 @@ export default function DashboardPage() {
             <CardTitle>Recent Runs</CardTitle>
           </CardHeader>
           <CardContent>
-            {loading ? (
+            {loading && recentRuns.length === 0 ? (
               <div className="text-center py-8">
                 <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary mx-auto"></div>
                 <p className="mt-4 text-muted-foreground">Loading...</p>
@@ -493,27 +449,44 @@ export default function DashboardPage() {
                   </thead>
                   <tbody>
                     {recentRuns.map((run) => (
-                      <tr key={run.id} className="border-b hover:bg-muted/50 cursor-pointer" onClick={() => window.location.href = `/runs/${run.id}`}>
+                      <tr
+                        key={run.id}
+                        className="border-b hover:bg-muted/50 cursor-pointer"
+                        onClick={() => router.push(`/runs/${run.id}`)}
+                      >
                         <td className="p-4 font-mono text-sm">{run.id.slice(0, 8)}...</td>
                         <td className="p-4">
-                          <span className={`px-2 py-1 rounded-full text-xs font-medium ${getStatusColor(run.status)}`}>
+                          <span
+                            className={`px-2 py-1 rounded-full text-xs font-medium ${getStatusColor(run.status)}`}
+                          >
                             {run.status.replace("_", " ")}
                           </span>
                         </td>
                         <td className="p-4">{run.total_tests}</td>
                         <td className="p-4">
-                          <span className="text-green-600">{run.passed_count}</span> / 
-                          <span className="text-red-600">{run.failed_count}</span> / 
+                          <span className="text-green-600">{run.passed_count}</span> /{" "}
+                          <span className="text-red-600">{run.failed_count}</span> /{" "}
                           <span className="text-yellow-600">{run.inconclusive_count}</span>
                         </td>
                         <td className="p-4">
-                          {run.critical_count > 0 && <span className="text-red-600 font-medium">Critical: {run.critical_count}</span>}
-                          {run.high_count > 0 && <span className="text-orange-600 font-medium ml-2">High: {run.high_count}</span>}
-                          {run.medium_count > 0 && <span className="text-yellow-600 font-medium ml-2">Medium: {run.medium_count}</span>}
-                          {run.low_count > 0 && <span className="text-blue-600 font-medium ml-2">Low: {run.low_count}</span>}
-                          {run.critical_count === 0 && run.high_count === 0 && run.medium_count === 0 && run.low_count === 0 && (
-                            <span className="text-muted-foreground text-xs">0 findings</span>
+                          {run.critical_count > 0 && (
+                            <span className="text-red-600 font-medium">Critical: {run.critical_count}</span>
                           )}
+                          {run.high_count > 0 && (
+                            <span className="text-orange-600 font-medium ml-2">High: {run.high_count}</span>
+                          )}
+                          {run.medium_count > 0 && (
+                            <span className="text-yellow-600 font-medium ml-2">Medium: {run.medium_count}</span>
+                          )}
+                          {run.low_count > 0 && (
+                            <span className="text-blue-600 font-medium ml-2">Low: {run.low_count}</span>
+                          )}
+                          {run.critical_count === 0 &&
+                            run.high_count === 0 &&
+                            run.medium_count === 0 &&
+                            run.low_count === 0 && (
+                              <span className="text-muted-foreground text-xs">0 findings</span>
+                            )}
                         </td>
                         <td className="p-4">{formatCost(run.total_cost_usd)}</td>
                         <td className="p-4 text-sm text-muted-foreground">{formatDate(run.created_at)}</td>

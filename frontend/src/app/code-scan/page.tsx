@@ -1,20 +1,19 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
-import { useRouter } from "next/navigation";
+
 import { DashboardLayout } from "@/components/ui/dashboard-layout";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
+
+
 import { api } from "@/lib/api";
-import { useAuth, getAccessToken } from "@/lib/auth";
-import { Shield, Bug, AlertTriangle, CheckCircle, Clock, FileSearch, Code2, Loader2 } from "lucide-react";
+import { useAuthGuard } from "@/hooks/useAuthGuard";
+import { Shield, Bug, AlertTriangle, CheckCircle, FileSearch, Code2, Loader2 } from "lucide-react";
 
 export default function CodeScanPage() {
-  const router = useRouter();
-  const { isAuthenticated, isLoading } = useAuth();
+  const { ready, authenticated } = useAuthGuard();
   const [findings, setFindings] = useState<any[]>([]);
   const [summary, setSummary] = useState({ critical: 0, high: 0, medium: 0, low: 0 });
   const [loading, setLoading] = useState(false);
@@ -49,13 +48,11 @@ export default function CodeScanPage() {
   };
 
   useEffect(() => {
-    const token = getAccessToken();
-    if (token) { fetchFindings(); return; }
-    if (!isLoading && !isAuthenticated) router.replace("/login");
-    else if (!isLoading && isAuthenticated) fetchFindings();
-  }, [isAuthenticated, isLoading, fetchFindings, router]);
+    if (!ready || !authenticated) return;
+    void fetchFindings();
+  }, [ready, authenticated, fetchFindings]);
 
-  if (isLoading && !getAccessToken()) return <DashboardLayout><div className="flex h-[calc(100vh-4rem)] items-center justify-center"><div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div></div></DashboardLayout>;
+  if (!ready || !authenticated) return <DashboardLayout><div className="flex h-[calc(100vh-4rem)] items-center justify-center"><div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div></div></DashboardLayout>;
 
   return (
     <DashboardLayout>

@@ -1,17 +1,17 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
-import { useRouter } from "next/navigation";
+
 import { DashboardLayout } from "@/components/ui/dashboard-layout";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { api, handleApiError } from "@/lib/api";
+
+import { api } from "@/lib/api";
 import { formatDate } from "@/lib/utils";
-import { useAuth, getAccessToken } from "@/lib/auth";
-import { Plus, Eye, Check, X, Clock, Trash2, RefreshCw } from "lucide-react";
+import { useAuthGuard } from "@/hooks/useAuthGuard";
+import { Eye, Check, X, Trash2, RefreshCw } from "lucide-react";
 
 interface Baseline {
   id: string;
@@ -41,8 +41,7 @@ interface BaselineItem {
 }
 
 export default function BaselinesPage() {
-  const router = useRouter();
-  const { isAuthenticated, isLoading } = useAuth();
+  const { ready, authenticated } = useAuthGuard();
   const [baselines, setBaselines] = useState<Baseline[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedBaseline, setSelectedBaseline] = useState<Baseline | null>(null);
@@ -98,18 +97,15 @@ export default function BaselinesPage() {
       fetchBaselines();
     } catch (error) {
       console.error("Failed to delete baseline:", error);
-      alert(handleApiError(error));
     }
   };
 
   useEffect(() => {
-    const token = getAccessToken();
-    if (token) { fetchBaselines(); return; }
-    if (!isLoading && !isAuthenticated) router.replace("/login");
-    else if (!isLoading && isAuthenticated) fetchBaselines();
-  }, [isAuthenticated, isLoading, fetchBaselines, router]);
+    if (!ready || !authenticated) return;
+    void fetchBaselines();
+  }, [ready, authenticated, fetchBaselines]);
 
-  if (isLoading && !getAccessToken()) {
+  if (!ready || !authenticated) {
     return (
       <DashboardLayout>
         <div className="flex h-[calc(100vh-4rem)] items-center justify-center">

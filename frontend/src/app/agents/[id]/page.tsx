@@ -8,9 +8,9 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { api } from "@/lib/api";
 import { formatDate, formatDuration } from "@/lib/utils";
-import { useAuth, getAccessToken } from "@/lib/auth";
+import { useAuthGuard } from "@/hooks/useAuthGuard";
 import { useParams, useRouter } from "next/navigation";
-import { Edit, Trash2, ArrowLeft, Wifi, Play } from "lucide-react";
+import { Edit, Trash2, ArrowLeft, Play } from "lucide-react";
 
 interface TargetAgent {
   id: string;
@@ -50,7 +50,7 @@ export default function AgentDetailPage() {
   const params = useParams();
   const agentId = params.id as string;
   const router = useRouter();
-  const { isAuthenticated, isLoading } = useAuth();
+  const { ready, authenticated } = useAuthGuard();
   const [agent, setAgent] = useState<TargetAgent | null>(null);
   const [runs, setRuns] = useState<RunSummary[]>([]);
   const [loading, setLoading] = useState(true);
@@ -79,11 +79,10 @@ export default function AgentDetailPage() {
   }, [agentId]);
 
   useEffect(() => {
-    const token = getAccessToken();
-    if (token) { fetchAgent(); fetchRuns(); return; }
-    if (!isLoading && !isAuthenticated) router.replace("/login");
-    else if (!isLoading && isAuthenticated) { fetchAgent(); fetchRuns(); }
-  }, [isAuthenticated, isLoading, fetchAgent, fetchRuns, router]);
+    if (!ready || !authenticated) return;
+    void fetchAgent();
+    void fetchRuns();
+  }, [ready, authenticated, fetchAgent, fetchRuns]);
 
   const handleDelete = async () => {
     if (!confirm("Are you sure you want to delete this agent?")) return;
@@ -95,7 +94,7 @@ export default function AgentDetailPage() {
     }
   };
 
-  if (isLoading && !getAccessToken()) {
+  if (!ready || !authenticated) {
     return (
       <div className="flex h-screen items-center justify-center">
         <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>

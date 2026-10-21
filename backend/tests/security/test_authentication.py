@@ -39,7 +39,7 @@ class TestGetCurrentUser:
         with pytest.raises(HTTPException) as exc_info:
             await get_current_user(
                 MagicMock(scopes=[]),
-                token="invalid.token.value",
+                token="invalid.token.value",  # nosec: test dummy token
             )
         assert exc_info.value.status_code in [401, 500]
 
@@ -64,30 +64,6 @@ class TestDecodeToken:
             decode_token("invalid.token.value")
 
 
-@pytest.fixture
-def default_keys(tmp_path):
-    """Throwaway keys standing in for the default key files (none are committed to the repo)."""
-    from cryptography.hazmat.primitives import serialization
-    from cryptography.hazmat.primitives.asymmetric import rsa
-
-    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-    (tmp_path / "private_key.pem").write_bytes(
-        key.private_bytes(
-            serialization.Encoding.PEM,
-            serialization.PrivateFormat.TraditionalOpenSSL,
-            serialization.NoEncryption(),
-        )
-    )
-    (tmp_path / "public_key.pem").write_bytes(
-        key.public_key().public_bytes(
-            serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo
-        )
-    )
-    with patch("app.core.security._default_key_path", side_effect=lambda name: str(tmp_path / name)):
-        yield tmp_path
-
-
-@pytest.mark.usefixtures("default_keys")
 class TestLoadKeys:
     """Test key loading functions."""
 

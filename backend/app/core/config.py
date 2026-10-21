@@ -16,19 +16,19 @@ class Settings(BaseSettings):
     APP_VERSION: str = "1.0.0"
     ENVIRONMENT: str = "development"
     DEBUG: bool = True
-    SECRET_KEY: str = Field(..., min_length=32)
+    SECRET_KEY: str = Field(default="dev-secret-key-minimum-32-characters-long", min_length=32)
     API_V1_PREFIX: str = "/api/v1"
 
-    DATABASE_URL: str
+    DATABASE_URL: str = "sqlite+aiosqlite:///./redteam_dev.db"
     DATABASE_POOL_SIZE: int = 20
     DATABASE_MAX_OVERFLOW: int = 10
     DATABASE_POOL_TIMEOUT: int = 30
 
-    REDIS_URL: str
+    REDIS_URL: str = "redis://localhost:6379/0"
     REDIS_MAX_CONNECTIONS: int = 50
 
-    CELERY_BROKER_URL: str
-    CELERY_RESULT_BACKEND: str
+    CELERY_BROKER_URL: str = "redis://localhost:6379/1"
+    CELERY_RESULT_BACKEND: str = "redis://localhost:6379/2"
     CELERY_TASK_SERIALIZER: str = "json"
     CELERY_RESULT_SERIALIZER: str = "json"
     CELERY_ACCEPT_CONTENT: list[str] = ["json"]

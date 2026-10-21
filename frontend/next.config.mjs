@@ -3,27 +3,47 @@ const apiProxyTarget = (process.env.API_PROXY_TARGET || process.env.NEXT_PUBLIC_
 const normalizedApiProxyTarget = apiProxyTarget.endsWith("/api/v1") ? apiProxyTarget : `${apiProxyTarget}/api/v1`;
 
 const nextConfig = {
-  reactStrictMode: false,
-  // Standalone server for the Docker image only: on Windows it needs symlink privileges.
-  output: process.env.NEXT_OUTPUT_STANDALONE === "true" ? "standalone" : undefined,
+  reactStrictMode: false, // Disable strict mode to reduce web vitals
+  // The Docker image copies `.next/standalone`, so the standalone output is
+  // required there. It is opt-in because the standalone bundler recreates
+  // the pnpm symlink farm, which requires elevated privileges on Windows and
+  // fails the local build with EPERM. The Dockerfile sets the flag.
+  ...(process.env.NEXT_OUTPUT_STANDALONE === "true" ? { output: "standalone" } : {}),
   eslint: {
-    // Lint runs as its own CI step (`pnpm lint`) instead of inside `next build`.
+    // Skip ESLint during production builds to avoid hanging
+    // Run `npm run lint` separately for linting
     ignoreDuringBuilds: true,
   },
   typescript: {
+    // Type checking is already verified separately
     ignoreBuildErrors: false,
   },
   experimental: {
-    optimizePackageImports: ["lucide-react", "@radix-ui/react-icons"],
+    optimizePackageImports: ["lucide-react"],
   },
   images: {
     remotePatterns: [{ protocol: "http", hostname: "localhost" }],
   },
   // Production optimizations
   productionBrowserSourceMaps: false,
+  // Suppress non-critical errors in development
   onDemandEntries: {
     maxInactiveAge: 25 * 1000,
     pagesBufferLength: 2,
+  },
+  // Webpack config to exclude web-vitals
+  webpack: (config, { dev, isServer }) => {
+    if (!isServer) {
+      // Completely remove web-vitals from bundle
+      config.resolve.alias = {
+        ...config.resolve.alias,
+        'next/dist/compiled/web-vitals': false,
+        'web-vitals': false,
+      };
+      
+      // DefinePlugin skipped (web-vitals aliased to false above is sufficient)
+    }
+    return config;
   },
   async rewrites() {
     return [

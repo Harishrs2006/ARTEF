@@ -14,14 +14,20 @@ export const DashboardLayout: React.FC<DashboardLayoutProps> = ({ children }: Da
   const [isMobileSidebarOpen, setIsMobileSidebarOpen] = React.useState(false);
 
   React.useEffect(() => {
+    // The header dispatches these events; the mobile variant must be handled
+    // separately from the desktop collapse toggle, otherwise the hamburger
+    // button had no effect on small screens.
     const handleToggle = () => setIsSidebarCollapsed((prev) => !prev);
+    const handleOpenMobile = () => setIsMobileSidebarOpen(true);
     const handleCloseMobile = () => setIsMobileSidebarOpen(false);
 
     document.addEventListener("toggle-sidebar", handleToggle);
+    document.addEventListener("open-mobile-sidebar", handleOpenMobile);
     document.addEventListener("close-mobile-sidebar", handleCloseMobile);
 
     return () => {
       document.removeEventListener("toggle-sidebar", handleToggle);
+      document.removeEventListener("open-mobile-sidebar", handleOpenMobile);
       document.removeEventListener("close-mobile-sidebar", handleCloseMobile);
     };
   }, []);
@@ -31,7 +37,8 @@ export const DashboardLayout: React.FC<DashboardLayoutProps> = ({ children }: Da
       <Sidebar
         isCollapsed={isSidebarCollapsed}
         onToggle={() => setIsSidebarCollapsed((prev) => !prev)}
-        className={cn("transition-transform duration-300 z-50 lg:translate-x-0", isMobileSidebarOpen && "translate-x-0")}
+        isMobileOpen={isMobileSidebarOpen}
+        onCloseMobile={() => setIsMobileSidebarOpen(false)}
       />
       <div
         className={cn(

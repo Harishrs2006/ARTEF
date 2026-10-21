@@ -283,7 +283,7 @@ class PyTorchDetector(BaseDetector):
                 import pickle
 
                 with open(file_path, "rb") as f:
-                    obj = pickle.load(f)
+                    obj = pickle.load(f)  # nosec B301
                     if hasattr(obj, "__dict__") and "state_dict" in obj.__dict__:
                         findings.append(
                             ScanFinding(

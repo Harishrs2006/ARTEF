@@ -37,6 +37,9 @@ user_roles = Table(
         ForeignKey("roles.id", ondelete="CASCADE"),
         primary_key=True,
     ),
+    # The composite primary key only indexes the leading column, so a query
+    # such as "which users have the admin role" would need a full scan.
+    Index("ix_user_roles_role_id", "role_id"),
 )
 
 
@@ -55,6 +58,8 @@ role_permissions = Table(
         ForeignKey("permissions.id", ondelete="CASCADE"),
         primary_key=True,
     ),
+    # Same for "which roles grant this permission".
+    Index("ix_role_permissions_permission_id", "permission_id"),
 )
 
 

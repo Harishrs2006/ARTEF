@@ -34,9 +34,9 @@ class BaseRepository(Generic[ModelType]):
         query = select(self.model)
         if filters:
             for field, value in filters.items():
-                query = query.where(getattr(self.model, field) == value)
+                query = query.where(self._column(field) == value)
         if order_by:
-            column = getattr(self.model, order_by)
+            column = self._column(order_by)
             query = query.order_by(column.desc() if descending else column.asc())
         query = query.offset(skip)
         if limit is not None:  # None = all rows (internal pipeline use)
@@ -44,18 +44,26 @@ class BaseRepository(Generic[ModelType]):
         result = await self.session.execute(query)
         return list(result.scalars().all())
 
+    def _column(self, field: str):
+        """Resolve a field name to a mapped column, rejecting non-column attributes."""
+        if not hasattr(self.model, field):
+            raise ValueError(f"Unknown field '{field}' for {self.model.__name__}")
+        attr = getattr(self.model, field)
+        if not hasattr(attr, "operate"):
+            raise ValueError(f"Field '{field}' is not a mapped column of {self.model.__name__}")
+        return attr
+
     async def count(self, filters: dict | None = None) -> int:
         query = select(func.count()).select_from(self.model)
         if filters:
             for field, value in filters.items():
-                query = query.where(getattr(self.model, field) == value)
+                query = query.where(self._column(field) == value)
         result = await self.session.execute(query)
         return result.scalar_one()
 
     async def create(self, obj: ModelType) -> ModelType:
         self.session.add(obj)
         await self.session.flush()
-        await self.session.refresh(obj)
         return obj
 
     async def update(self, id: UUID, data: dict) -> ModelType | None:
@@ -65,7 +73,6 @@ class BaseRepository(Generic[ModelType]):
         for key, value in data.items():
             setattr(obj, key, value)
         await self.session.flush()
-        await self.session.refresh(obj)
         return obj
 
     async def delete(self, id: UUID) -> bool:

@@ -1,6 +1,6 @@
-﻿"use client";
+"use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { DashboardLayout } from "@/components/ui/dashboard-layout";
 import { Button } from "@/components/ui/button";
@@ -10,8 +10,9 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { api } from "@/lib/api";
 import { formatDate, formatCost, getStatusColor } from "@/lib/utils";
-import { useAuth, getAccessToken } from "@/lib/auth";
-import { Plus, Filter, Download, RefreshCw, AlertTriangle } from "lucide-react";
+import { useAsyncResource } from "@/hooks/useAsyncResource";
+import { useAuthGuard } from "@/hooks/useAuthGuard";
+import { Plus, Filter, RefreshCw, AlertTriangle } from "lucide-react";
 
 interface RunSummary {
   id: string;
@@ -43,70 +44,70 @@ const GATE_BADGE: Record<string, string> = {
   BLOCK: "bg-red-200 text-red-900 dark:bg-red-900/60 dark:text-red-200",
 };
 
+const PAGE_SIZE = 20;
+const POLL_INTERVAL_MS = 30_000;
+const ALL = "__all__";
+
 export default function RunsPage() {
   const router = useRouter();
-  const { isAuthenticated, isLoading, logout } = useAuth();
-  const [runs, setRuns] = useState<RunSummary[]>([]);
-  const [loading, setLoading] = useState(true);
+  const { ready, authenticated } = useAuthGuard();
   const [page, setPage] = useState(1);
-  const [totalPages] = useState(1);
-  const [filters, setFilters] = useState({ status: "", agent_id: "" });
-  const [error, setError] = useState<string | null>(null);
-  const [refreshing, setRefreshing] = useState(false);
-
-  const fetchRuns = useCallback(async (isRefresh = false) => {
-    if (isRefresh) {
-      setRefreshing(true);
-    } else {
-      setLoading(true);
-    }
-    setError(null);
-    
-    try {
-      const params = new URLSearchParams({
-        skip: ((page - 1) * 20).toString(),
-        limit: "20",
-      });
-      if (filters.status) params.append("status", filters.status);
-      if (filters.agent_id) params.append("target_agent_id", filters.agent_id);
-
-      const response = await api.get(`/runs?${params.toString()}`);
-      const data = Array.isArray(response.data) ? response.data : response.data.items || [];
-      setRuns(data);
-      
-      if (data.length === 0 && !isRefresh) {
-        setError("No runs found. Create your first run to get started.");
-      }
-    } catch (error) {
-      console.error("Failed to fetch runs:", error);
-      setError("Failed to load runs. Please check your connection.");
-      setRuns([]);
-    } finally {
-      setLoading(false);
-      setRefreshing(false);
-    }
-  }, [page, filters]);
+  const [status, setStatus] = useState(ALL);
+  const [agentId, setAgentId] = useState("");
+  // Debounced so that typing an agent id does not fire a request per keystroke.
+  const [debouncedAgentId, setDebouncedAgentId] = useState("");
 
   useEffect(() => {
-    const token = getAccessToken();
-    if (!token) {
-      router.replace("/login");
-    } else {
-      fetchRuns();
-    }
-  }, [router, fetchRuns]);
+    const timer = setTimeout(() => setDebouncedAgentId(agentId.trim()), 350);
+    return () => clearTimeout(timer);
+  }, [agentId]);
 
+  // Any filter change invalidates the current page offset.
   useEffect(() => {
-    if (!isAuthenticated || loading) return;
-    
-    const interval = setInterval(() => {
-      fetchRuns(true);
-    }, 30000);
-    
-    return () => clearInterval(interval);
-  }, [isAuthenticated, loading, fetchRuns]);
+    setPage(1);
+  }, [status, debouncedAgentId]);
 
-  if (isLoading && !getAccessToken()) {
+  const query = useMemo(() => {
+    const params = new URLSearchParams({
+      skip: ((page - 1) * PAGE_SIZE).toString(),
+      limit: PAGE_SIZE.toString(),
+    });
+    if (status !== ALL) params.append("status", status);
+    if (debouncedAgentId) params.append("target_agent_id", debouncedAgentId);
+    return params.toString();
+  }, [page, status, debouncedAgentId]);
+
+  const { data, loading, error, refresh } = useAsyncResource<{
+    runs: RunSummary[];
+    total: number;
+  }>(
+    async (signal) => {
+      const response = await api.get<RunSummary[]>(`/runs?${query}`, { signal });
+      const totalHeader = response.headers?.["x-total-count"];
+      const total = totalHeader ? Number(totalHeader) : response.data.length;
+      return {
+        runs: Array.isArray(response.data) ? response.data : [],
+        total: Number.isFinite(total) ? total : 0,
+      };
+    },
+    [query],
+    { enabled: ready && authenticated, pollIntervalMs: POLL_INTERVAL_MS }
+  );
+
+  const runs = data?.runs ?? [];
+  const total = data?.total ?? 0;
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+
+  const clearFilters = () => {
+    setStatus(ALL);
+    setAgentId("");
+    setDebouncedAgentId("");
+    setPage(1);
+  };
+
+  const hasActiveFilters = status !== ALL || agentId !== "";
+
+  if (!ready || !authenticated) {
     return (
       <DashboardLayout>
         <div className="flex h-[calc(100vh-4rem)] items-center justify-center">
@@ -130,16 +131,16 @@ export default function RunsPage() {
             )}
           </div>
           <div className="flex gap-2">
-            <Button 
-              variant="outline" 
+            <Button
+              variant="outline"
               size="icon"
-              onClick={() => fetchRuns(true)}
-              disabled={refreshing}
+              onClick={() => void refresh()}
+              disabled={loading}
               title="Refresh runs"
             >
-              <RefreshCw className={`h-4 w-4 ${refreshing ? "animate-spin" : ""}`} />
+              <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
             </Button>
-            <Button onClick={() => window.location.href = "/runs/new"}>
+            <Button onClick={() => router.push("/runs/new")}>
               <Plus className="mr-2 h-4 w-4" />
               New Evaluation
             </Button>
@@ -149,16 +150,26 @@ export default function RunsPage() {
         <Card>
           <CardHeader className="flex flex-row items-center justify-between">
             <CardTitle>Filters</CardTitle>
-            <Button variant="outline" size="sm">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={clearFilters}
+              disabled={!hasActiveFilters}
+            >
               <Filter className="mr-2 h-4 w-4" />
               Clear Filters
             </Button>
           </CardHeader>
           <CardContent className="grid gap-4 md:grid-cols-4">
-            <Select value={filters.status} onValueChange={(value) => setFilters({...filters, status: value})}>
-              <SelectTrigger><SelectValue placeholder="All Statuses" /></SelectTrigger>
+            <Select
+              value={status}
+              onValueChange={(value) => setStatus(value)}
+            >
+              <SelectTrigger>
+                <SelectValue placeholder="All Statuses" />
+              </SelectTrigger>
               <SelectContent>
-                <SelectItem value="">All Statuses</SelectItem>
+                <SelectItem value={ALL}>All Statuses</SelectItem>
                 <SelectItem value="queued">Queued</SelectItem>
                 <SelectItem value="running">Running</SelectItem>
                 <SelectItem value="completed">Completed</SelectItem>
@@ -167,19 +178,25 @@ export default function RunsPage() {
                 <SelectItem value="cancelled">Cancelled</SelectItem>
               </SelectContent>
             </Select>
-            <Input placeholder="Filter by Agent ID" value={filters.agent_id} onChange={(e) => setFilters({...filters, agent_id: e.target.value})} />
+            <Input
+              placeholder="Filter by Agent ID"
+              value={agentId}
+              onChange={(e) => setAgentId(e.target.value)}
+            />
           </CardContent>
         </Card>
 
         <Card>
           <CardContent>
-            {loading ? (
+            {loading && runs.length === 0 ? (
               <div className="text-center py-8">
                 <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary mx-auto"></div>
                 <p className="mt-4 text-muted-foreground">Loading...</p>
               </div>
             ) : runs.length === 0 ? (
-              <div className="text-center py-8 text-muted-foreground">No runs found</div>
+              <div className="text-center py-8 text-muted-foreground">
+                {hasActiveFilters ? "No runs match the current filters" : "No runs found"}
+              </div>
             ) : (
               <>
                 <div className="overflow-x-auto">
@@ -200,7 +217,11 @@ export default function RunsPage() {
                     </TableHeader>
                     <TableBody>
                       {runs.map((run) => (
-                        <TableRow key={run.id} className="cursor-pointer" onClick={() => window.location.href = `/runs/${run.id}`}>
+                        <TableRow
+                          key={run.id}
+                          className="cursor-pointer"
+                          onClick={() => router.push(`/runs/${run.id}`)}
+                        >
                           <TableCell className="font-mono text-sm">{run.id.slice(0, 8)}...</TableCell>
                           <TableCell className="text-sm" title={run.target_agent_id}>
                             {run.target_agent_name ?? `${run.target_agent_id.slice(0, 8)}...`}
@@ -209,7 +230,9 @@ export default function RunsPage() {
                             {run.suite_name ?? `${run.suite_id.slice(0, 8)}...`} (v{run.suite_version})
                           </TableCell>
                           <TableCell>
-                            <span className={`px-2 py-1 rounded-full text-xs font-medium ${getStatusColor(run.status)}`}>
+                            <span
+                              className={`px-2 py-1 rounded-full text-xs font-medium ${getStatusColor(run.status)}`}
+                            >
                               {run.status.replace("_", " ")}
                             </span>
                           </TableCell>
@@ -224,27 +247,54 @@ export default function RunsPage() {
                           </TableCell>
                           <TableCell>{run.total_tests}</TableCell>
                           <TableCell>
-                            <span className="text-green-600">{run.passed_count}</span> / 
-                            <span className="text-red-600">{run.failed_count}</span> / 
+                            <span className="text-green-600">{run.passed_count}</span> /{" "}
+                            <span className="text-red-600">{run.failed_count}</span> /{" "}
                             <span className="text-yellow-600">{run.inconclusive_count}</span>
                           </TableCell>
                           <TableCell>
-                            {run.critical_count > 0 && <span className="text-red-600 font-medium">Critical: {run.critical_count}</span>}
-                            {run.high_count > 0 && <span className="text-orange-600 font-medium ml-2">High: {run.high_count}</span>}
-                            {run.medium_count > 0 && <span className="text-yellow-600 font-medium ml-2">Medium: {run.medium_count}</span>}
-                            {run.low_count > 0 && <span className="text-blue-600 font-medium ml-2">Low: {run.low_count}</span>}
+                            {run.critical_count > 0 && (
+                              <span className="text-red-600 font-medium">
+                                Critical: {run.critical_count}
+                              </span>
+                            )}
+                            {run.high_count > 0 && (
+                              <span className="text-orange-600 font-medium ml-2">
+                                High: {run.high_count}
+                              </span>
+                            )}
+                            {run.medium_count > 0 && (
+                              <span className="text-yellow-600 font-medium ml-2">
+                                Medium: {run.medium_count}
+                              </span>
+                            )}
                           </TableCell>
                           <TableCell>{formatCost(run.total_cost_usd)}</TableCell>
-                          <TableCell className="text-sm text-muted-foreground">{formatDate(run.created_at)}</TableCell>
+                          <TableCell className="text-sm text-muted-foreground">
+                            {formatDate(run.created_at)}
+                          </TableCell>
                         </TableRow>
                       ))}
                     </TableBody>
                   </Table>
                 </div>
                 <div className="flex items-center justify-between mt-4">
-                  <Button variant="outline" onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page === 1}>Previous</Button>
-                  <span>Page {page} of {totalPages}</span>
-                  <Button variant="outline" onClick={() => setPage(p => p + 1)} disabled={page >= totalPages}>Next</Button>
+                  <Button
+                    variant="outline"
+                    onClick={() => setPage((p) => Math.max(1, p - 1))}
+                    disabled={page === 1 || loading}
+                  >
+                    Previous
+                  </Button>
+                  <span>
+                    Page {page} of {totalPages} ({total} run{total === 1 ? "" : "s"})
+                  </span>
+                  <Button
+                    variant="outline"
+                    onClick={() => setPage((p) => p + 1)}
+                    disabled={page >= totalPages || loading}
+                  >
+                    Next
+                  </Button>
                 </div>
               </>
             )}

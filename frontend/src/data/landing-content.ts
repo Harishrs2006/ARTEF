@@ -34,6 +34,15 @@ export interface WorkflowStep {
   title: string;
   desc: string;
   color: string;
+  /**
+   * Pre-built Tailwind class strings.
+   *
+   * Tailwind scans the source for complete class names, so a class assembled
+   * at runtime (`text-${color}-500`) is never emitted into the stylesheet.
+   * The classes are therefore spelled out here as literal strings.
+   */
+  numberClasses: string;
+  accentClasses: string;
 }
 
 export interface BenchmarkRow {
@@ -121,11 +130,20 @@ export const FAQS: FaqItem[] = [
   },
 ];
 
+/**
+ * Headline figures shown on the landing page.
+ *
+ * These describe the framework itself and are verifiable from the codebase
+ * (the taxonomy, the API surface and the framework version). Measured
+ * performance numbers - judge accuracy, guardrail latency - are *not*
+ * hardcoded here: they depend on the deployment and the models in use, and
+ * publishing unverified figures would misrepresent the product.
+ */
 export const HERO_STATS: StatItem[] = [
-  { val: "45+", label: "Attack Vectors", color: "text-gray-900" },
-  { val: "< 12ms", label: "Guardrail Latency", color: "text-emerald-600" },
-  { val: "99.4%", label: "Judge Accuracy", color: "text-rose-600" },
-  { val: "100%", label: "OWASP LLM Top 10", color: "text-pink-600" },
+  { val: "19", label: "Attack Categories", color: "text-gray-900" },
+  { val: "100+", label: "API Endpoints", color: "text-emerald-600" },
+  { val: "OWASP", label: "LLM Top 10 Coverage", color: "text-rose-600" },
+  { val: "On-Prem", label: "Self-Hosted Ready", color: "text-pink-600" },
 ];
 
 export const FRAMEWORK_BADGES: string[] = [
@@ -148,10 +166,38 @@ export const NAV_LINKS = [
 ];
 
 export const WORKFLOW_STEPS: WorkflowStep[] = [
-  { num: "01", title: "Connect Target Agent", desc: "Plug in via REST API, OpenAI spec, or MCP tool format.", color: "rose" },
-  { num: "02", title: "Select Attack Matrix", desc: "Choose OWASP LLM Top 10, jailbreak benchmarks, or upload custom vectors.", color: "pink" },
-  { num: "03", title: "Autonomous Execution", desc: "ARTEF runs multi-turn probes and evaluates via ensemble consensus judges.", color: "fuchsia" },
-  { num: "04", title: "Enforce Safety Gate", desc: "View heatmaps, audit reports, and block risky regressions before deployment.", color: "emerald" },
+  {
+    num: "01",
+    title: "Connect Target Agent",
+    desc: "Plug in via REST API, OpenAI spec, or MCP tool format.",
+    color: "rose",
+    numberClasses: "text-rose-500",
+    accentClasses: "from-rose-500 to-blue-500",
+  },
+  {
+    num: "02",
+    title: "Select Attack Matrix",
+    desc: "Choose OWASP LLM Top 10, jailbreak benchmarks, or upload custom vectors.",
+    color: "pink",
+    numberClasses: "text-pink-500",
+    accentClasses: "from-pink-500 to-blue-500",
+  },
+  {
+    num: "03",
+    title: "Autonomous Execution",
+    desc: "ARTEF runs multi-turn probes and evaluates via ensemble consensus judges.",
+    color: "fuchsia",
+    numberClasses: "text-fuchsia-500",
+    accentClasses: "from-fuchsia-500 to-blue-500",
+  },
+  {
+    num: "04",
+    title: "Enforce Safety Gate",
+    desc: "View heatmaps, audit reports, and block risky regressions before deployment.",
+    color: "emerald",
+    numberClasses: "text-emerald-500",
+    accentClasses: "from-emerald-500 to-blue-500",
+  },
 ];
 
 export const BENCHMARK_COMPARISONS: BenchmarkRow[] = [

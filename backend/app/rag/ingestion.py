@@ -1,4 +1,4 @@
-﻿from typing import Any
+from typing import Any
 
 from app.core.logging import get_logger
 from app.rag.vector_store import VectorStore

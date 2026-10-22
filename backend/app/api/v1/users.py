@@ -1,7 +1,7 @@
 from datetime import datetime
 from uuid import UUID
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, EmailStr
 
 from app.api.deps import (
@@ -12,8 +12,10 @@ from app.api.deps import (
     get_user_repo,
     require_role,
 )
-from app.core.exceptions import ConflictError, NotFoundError
+from app.core.exceptions import AuthenticationError, ConflictError, NotFoundError
 from app.core.logging import get_logger
+from app.core.password_policy import validate_password_strength
+from app.core.security import get_password_hash, verify_password
 from app.models.user import Role
 from app.repositories.users import PermissionRepository, RoleRepository, UserRepository
 
@@ -40,6 +42,15 @@ class UserUpdate(BaseModel):
     email: EmailStr | None = None
     full_name: str | None = None
     is_active: bool | None = None
+
+
+class PasswordChangeRequest(BaseModel):
+    current_password: str
+    new_password: str
+
+
+class PasswordChangeResponse(BaseModel):
+    message: str
 
 
 class RoleResponse(BaseModel):
@@ -122,10 +133,37 @@ async def update_current_user_profile(
     )
 
 
+@router.post("/me/password", response_model=PasswordChangeResponse)
+async def change_own_password(
+    request: PasswordChangeRequest,
+    user_repo: UserRepository = Depends(get_user_repo),
+    current_user: TokenData = Depends(get_current_active_user),
+):
+    """Change the authenticated user's own password.
+
+    The current password must be supplied, and the new password has to meet
+    the same strength requirements that registration enforces.
+    """
+    user = await user_repo.get_with_roles(current_user.sub)
+    if not user:
+        raise NotFoundError("User", current_user.sub)
+
+    if not verify_password(request.current_password, user.hashed_password):
+        raise AuthenticationError("Current password is incorrect")
+
+    validate_password_strength(request.new_password, user.username, user.email)
+
+    user.hashed_password = get_password_hash(request.new_password)
+    await user_repo.session.flush()
+
+    logger.info("password_changed", user_id=str(user.id))
+    return PasswordChangeResponse(message="Password updated successfully")
+
+
 @router.get("/", response_model=list[UserResponse])
 async def list_users(
-    skip: int = 0,
-    limit: int = 100,
+    skip: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=1000),
     user_repo: UserRepository = Depends(get_user_repo),
     current_user: TokenData = Depends(require_role(["admin", "safety_engineer"])),
 ):

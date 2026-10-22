@@ -1,26 +1,76 @@
-﻿import json
+import json
 
-import httpx
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.domain.value_objects import EvidenceItem, JudgeOutput, LLMRubric
 from app.evaluation.judges.base import BaseJudge
-from app.providers.llm import LLMProviderFactory
+from app.providers.llm import LLMProviderError, LLMProviderFactory
 
 settings = get_settings()
 logger = get_logger(__name__)
 
 
+def _parse_judge_json(text: str) -> dict | None:
+    """Parse the judge's JSON output, tolerating markdown code fences.
+
+    Returns ``None`` when the payload cannot be parsed as a JSON object.
+    """
+    if not text:
+        return None
+
+    candidate = text.strip()
+
+    # Strip a ```json ... ``` fence if the model wrapped its answer.
+    if candidate.startswith("```"):
+        candidate = candidate.split("\n", 1)[-1] if "\n" in candidate else candidate
+        if candidate.endswith("```"):
+            candidate = candidate[: -3]
+        candidate = candidate.strip()
+
+    try:
+        parsed = json.loads(candidate)
+    except json.JSONDecodeError:
+        # Fall back to the first balanced JSON object in the text.
+        start = candidate.find("{")
+        if start == -1:
+            return None
+        depth = 0
+        for index in range(start, len(candidate)):
+            if candidate[index] == "{":
+                depth += 1
+            elif candidate[index] == "}":
+                depth -= 1
+                if depth == 0:
+                    try:
+                        parsed = json.loads(candidate[start : index + 1])
+                    except json.JSONDecodeError:
+                        return None
+                    break
+        else:
+            return None
+
+    return parsed if isinstance(parsed, dict) else None
+
+
 class LLMJudge(BaseJudge):
     def __init__(self):
-        self.provider = LLMProviderFactory.create_provider(
-            settings.PRIMARY_JUDGE_PROVIDER,
-            settings.PRIMARY_JUDGE_MODEL,
-            settings.PRIMARY_JUDGE_API_KEY,
-            settings.PRIMARY_JUDGE_BASE_URL,
-        )
+        # The provider is created lazily so that constructing a judge does not
+        # require the provider credentials to be present; the credential check
+        # happens when the judge is actually used.
+        self._provider = None
+
+    @property
+    def provider(self):
+        if self._provider is None:
+            self._provider = LLMProviderFactory.create_provider(
+                settings.PRIMARY_JUDGE_PROVIDER,
+                settings.PRIMARY_JUDGE_MODEL,
+                settings.PRIMARY_JUDGE_API_KEY,
+                settings.PRIMARY_JUDGE_BASE_URL,
+            )
+        return self._provider
 
     def _build_prompt(self, test_input: str, response: str, rubric: LLMRubric | None) -> str:
         criteria_text = ""
@@ -76,7 +126,13 @@ Only output the JSON object. No additional text."""
     @retry(
         stop=stop_after_attempt(2),
         wait=wait_exponential(multiplier=1, min=1, max=5),
-        retry=retry_if_exception_type((httpx.TimeoutException, httpx.ConnectError)),
+        # The provider layer converts the transport errors into
+        # ``LLMProviderError`` before they reach this decorator, so
+        # retrying on the raw httpx exceptions never fired. The provider
+        # error is the retryable signal; a schema/validation error is not
+        # retried by this decorator (it is handled by the caller).
+        retry=retry_if_exception_type((LLMProviderError,)),
+        reraise=True,
     )
     async def judge(
         self,
@@ -97,11 +153,11 @@ Only output the JSON object. No additional text."""
             logger.error("judge_provider_error", error=str(e))
             raise
 
-        try:
-            output_data = json.loads(result["text"])
-        except json.JSONDecodeError as e:
-            logger.error("judge_invalid_json", error=str(e), raw_output=result["text"][:500])
-            raise
+        text = result.get("text") or ""
+        output_data = _parse_judge_json(text)
+        if output_data is None:
+            logger.error("judge_invalid_json", raw_output=text[:500])
+            raise ValueError("Judge returned a response that is not valid JSON")
 
         output_data["metadata"] = {
             "tokens_used": result.get("tokens_used", 0),
@@ -110,10 +166,23 @@ Only output the JSON object. No additional text."""
             "model": settings.PRIMARY_JUDGE_MODEL,
         }
 
-        judge_output = JudgeOutput(**output_data)
+        try:
+            judge_output = JudgeOutput(**output_data)
+        except Exception as e:
+            logger.error("judge_schema_invalid", error=str(e))
+            raise ValueError(f"Judge output failed schema validation: {e}") from e
 
         if rubric and rubric.require_evidence and not judge_output.evidence:
-            judge_output.evidence = [EvidenceItem(source="target_response", text=response[:200])]
+            # The evidence is recorded as the judge's own response excerpt and
+            # is explicitly marked as not judge-cited, so that it cannot be
+            # mistaken for evidence the judge actually selected.
+            judge_output.evidence = [
+                EvidenceItem(
+                    source="unverified_target_response",
+                    text=response[:200],
+                    metadata={"judge_cited": False},
+                )
+            ]
 
         return judge_output
 

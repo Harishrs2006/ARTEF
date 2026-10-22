@@ -2,7 +2,6 @@
 
 import { useState, useEffect } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
 import { useAuth } from "@/lib/auth";
 import {
   Shield,
@@ -37,8 +36,7 @@ import {
 } from "@/data/landing-content";
 
 export default function LandingPage() {
-  const router = useRouter();
-  const { isAuthenticated } = useAuth();
+  const { isAuthenticated, status } = useAuth();
   const [mounted, setMounted] = useState(false);
   const [selectedScenario, setSelectedScenario] = useState(ATTACK_SCENARIOS[0]);
   const [openFaq, setOpenFaq] = useState<number | null>(0);
@@ -47,9 +45,16 @@ export default function LandingPage() {
     setMounted(true);
   }, []);
 
-  const handleLaunch = () => {
-    router.push(isAuthenticated ? "/dashboard" : "/login");
-  };
+  /**
+   * The destination of every "enter the console" call to action.
+   *
+   * `status === "authenticated"` is the only trustworthy signal: while the
+   * persisted session is still being validated ("unknown") the user may not
+   * actually be signed in, and sending them to the dashboard would land them
+   * on a page that fails every request.
+   */
+  const consoleHref = status === "authenticated" && isAuthenticated ? "/dashboard" : "/login";
+  const consoleLabel = consoleHref === "/dashboard" ? "Dashboard" : "Enter Console";
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 via-blue-50 to-white text-gray-900 font-sans antialiased selection:bg-blue-600 selection:text-white">
@@ -93,13 +98,13 @@ export default function LandingPage() {
             ))}
           </nav>
 
-          <button
-            onClick={handleLaunch}
+          <Link
+            href={consoleHref}
             className="inline-flex items-center space-x-2 px-5 py-2.5 rounded-xl text-sm font-semibold bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white shadow-lg shadow-blue-300/40 hover:scale-[1.02] active:scale-[0.98] transition-all"
           >
-            <span suppressHydrationWarning>{mounted && isAuthenticated ? "Dashboard" : "Enter Console"}</span>
+            <span suppressHydrationWarning>{mounted ? consoleLabel : "Enter Console"}</span>
             <ArrowRight className="w-4 h-4" />
-          </button>
+          </Link>
         </div>
       </header>
 
@@ -125,14 +130,14 @@ export default function LandingPage() {
               </p>
 
               <div className="flex flex-col sm:flex-row gap-4 pt-1">
-                <button
-                  onClick={handleLaunch}
+                <Link
+                  href={consoleHref}
                   className="px-8 py-3.5 rounded-xl font-semibold text-base bg-gradient-to-r from-indigo-500 to-blue-500 hover:from-indigo-400 hover:to-blue-400 text-white shadow-xl shadow-blue-300/50 hover:scale-[1.02] active:scale-[0.98] transition-all flex items-center justify-center space-x-2 group"
                 >
                   <Play className="w-4 h-4 fill-white" />
                   <span>Launch ARTEF Console</span>
                   <ArrowRight className="w-4 h-4 group-hover:translate-x-0.5 transition-transform" />
-                </button>
+                </Link>
                 <a
                   href="#simulator"
                   className="px-6 py-3.5 rounded-xl font-medium text-base bg-white hover:bg-blue-50 border border-blue-200 hover:border-blue-300 text-gray-700 hover:text-indigo-600 shadow-sm transition-all flex items-center justify-center space-x-2"
@@ -213,13 +218,14 @@ export default function LandingPage() {
           <div className="text-center max-w-3xl mx-auto mb-12">
             <div className="inline-flex items-center space-x-2 text-xs font-bold uppercase tracking-wider text-blue-600 bg-blue-50 px-4 py-1.5 rounded-full border border-blue-200 mb-4">
               <Terminal className="w-3.5 h-3.5" />
-              <span>Interactive Threat Simulation</span>
+              <span>Attack Scenario Walkthrough</span>
             </div>
             <h2 className="text-3xl sm:text-4xl font-extrabold text-gray-900">
-              Watch ARTEF Intercept Real Exploits
+              See How ARTEF Scores Adversarial Prompts
             </h2>
             <p className="mt-3 text-gray-500 text-base">
-              Select an attack scenario to see real-time threat interception, scoring, and neutralization.
+              Pre-recorded examples of how ARTEF classifies and scores each attack category.
+              Run them against your own agent from the evaluation console to get live results.
             </p>
           </div>
 
@@ -292,7 +298,7 @@ export default function LandingPage() {
                 <div className="grid grid-cols-2 gap-3">
                   <div className="p-3 rounded-xl bg-white border border-blue-100 shadow-sm">
                     <div className="text-[11px] text-gray-400 uppercase font-semibold">Confidence</div>
-                    <div className="text-lg font-bold text-gray-900 mt-0.5">99.8%</div>
+                    <div className="text-lg font-bold text-gray-900 mt-0.5">{selectedScenario.score}</div>
                   </div>
                   <div className="p-3 rounded-xl bg-white border border-blue-100 shadow-sm">
                     <div className="text-[11px] text-gray-400 uppercase font-semibold">Action</div>
@@ -407,10 +413,10 @@ export default function LandingPage() {
                 key={step.num}
                 className="p-7 rounded-3xl bg-white border border-blue-100 shadow-sm hover:shadow-lg hover:border-blue-200 transition-all relative overflow-hidden group"
               >
-                <div className={`absolute top-4 right-4 text-5xl font-black opacity-5 group-hover:opacity-10 transition-opacity text-${step.color}-500`}>
+                <div className={`absolute top-4 right-4 text-5xl font-black opacity-5 group-hover:opacity-10 transition-opacity ${step.numberClasses}`}>
                   {step.num}
                 </div>
-                <div className={`text-3xl font-black bg-gradient-to-r from-${step.color}-500 to-blue-500 bg-clip-text text-transparent mb-4`}>
+                <div className={`text-3xl font-black bg-gradient-to-r ${step.accentClasses} bg-clip-text text-transparent mb-4`}>
                   {step.num}
                 </div>
                 <h4 className="text-lg font-bold text-gray-900 mb-2">{step.title}</h4>
@@ -467,13 +473,13 @@ export default function LandingPage() {
               </p>
             </div>
             <div className="flex flex-col sm:flex-row gap-3">
-              <button
-                onClick={handleLaunch}
+              <Link
+                href={consoleHref}
                 className="px-6 py-3 rounded-xl font-semibold text-sm bg-white text-indigo-600 hover:bg-blue-50 shadow-lg transition-all flex items-center space-x-2"
               >
                 <span>Launch Console</span>
                 <ArrowRight className="w-4 h-4" />
-              </button>
+              </Link>
               <a
                 href="https://github.com/NETIZEN-11/ARTEF"
                 target="_blank"
@@ -529,13 +535,13 @@ export default function LandingPage() {
               <p className="mt-4 text-gray-500 text-base sm:text-lg max-w-2xl mx-auto">
                 Start automated red-teaming today and protect your autonomous systems against multi-turn jailbreaks, prompt injections, and data leaks.
               </p>
-              <button
-                onClick={handleLaunch}
+              <Link
+                href={consoleHref}
                 className="mt-8 px-10 py-4 rounded-2xl font-bold text-base bg-gradient-to-r from-indigo-500 to-blue-500 hover:from-indigo-400 hover:to-blue-400 text-white shadow-2xl shadow-blue-300/50 hover:scale-105 active:scale-95 transition-all flex items-center space-x-2 mx-auto"
               >
                 <span>Launch ARTEF Platform</span>
                 <ArrowRight className="w-5 h-5" />
-              </button>
+              </Link>
             </div>
           </div>
         </section>
@@ -559,7 +565,7 @@ export default function LandingPage() {
 
           <div className="flex items-center space-x-6 text-xs text-gray-400">
             <a href="https://github.com/NETIZEN-11/ARTEF" target="_blank" rel="noreferrer" className="hover:text-indigo-600 transition-colors font-medium">GitHub</a>
-            <Link href="/dashboard" className="hover:text-indigo-600 transition-colors font-medium">Dashboard</Link>
+            <Link href={consoleHref} className="hover:text-indigo-600 transition-colors font-medium">Dashboard</Link>
             <Link href="/login" className="hover:text-indigo-600 transition-colors font-medium">Sign In</Link>
           </div>
         </div>

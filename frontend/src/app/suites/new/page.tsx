@@ -141,9 +141,10 @@ export default function NewSuitePage() {
       formData.append("file", importFile);
 
       const endpoint = importFormat === "yaml" ? "/suites/import/yaml" : "/suites/import/json";
-      const response = await api.post(endpoint, formData, {
-        headers: { "Content-Type": "multipart/form-data" }
-      });
+      // The browser must set the multipart Content-Type itself so that the
+      // boundary parameter is included; setting it manually produces a
+      // malformed body the server cannot parse.
+      const response = await api.post(endpoint, formData);
 
       router.push(`/suites/${response.data.id}`);
     } catch (error) {

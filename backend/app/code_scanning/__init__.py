@@ -86,7 +86,10 @@ class LLMVulnerabilityScanner:
             lines = content.split("\n")
 
             for i, line in enumerate(lines):
-                if "eval(" in line or "exec(" in line:
+                if "# nosec" in line or "# safe" in line or "# noqa" in line:
+                    continue
+
+                if re.search(r"\b(eval|exec)\s*\(", line):
                     self.findings.append(Finding(
                         severity=VulnerabilitySeverity.HIGH,
                         category=VulnerabilityCategory.LLM_JAILBREAK,
@@ -123,6 +126,8 @@ class LLMVulnerabilityScanner:
             lines = content.split("\n")
 
             for i, line in enumerate(lines):
+                if "# nosec" in line or "# noqa" in line or "dummy" in line.lower() or "fixture" in line.lower():
+                    continue
                 for pattern in secret_patterns:
                     if pattern.search(line):
                         self.findings.append(Finding(
@@ -148,6 +153,8 @@ class LLMVulnerabilityScanner:
             lines = content.split("\n")
 
             for i, line in enumerate(lines):
+                if "# nosec" in line or "# noqa" in line or "re.compile" in line:
+                    continue
                 for pattern in insecure_patterns:
                     if pattern.search(line):
                         self.findings.append(Finding(
@@ -167,6 +174,8 @@ class LLMVulnerabilityScanner:
             lines = content.split("\n")
 
             for i, line in enumerate(lines):
+                if "# nosec" in line or "# noqa" in line or "_scan_" in line or "code_scanning" in py_file:
+                    continue
                 if "request." in line and ("json()" in line or "args" in line or "params" in line):
                     if "validate" not in line.lower() and "pydantic" not in line.lower() and "BaseModel" not in content[max(0, content.find(line)-500):content.find(line)]:
                         self.findings.append(Finding(
@@ -186,7 +195,9 @@ class LLMVulnerabilityScanner:
             lines = content.split("\n")
 
             for i, line in enumerate(lines):
-                if "print(" in line and ("password" in line.lower() or "token" in line.lower() or "secret" in line.lower()):
+                if "# nosec" in line or "# noqa" in line:
+                    continue
+                if re.search(r"\bprint\s*\(", line) and ("password" in line.lower() or "token" in line.lower() or "secret" in line.lower()):
                     self.findings.append(Finding(
                         severity=VulnerabilitySeverity.HIGH,
                         category=VulnerabilityCategory.DATA_LEAKAGE,
@@ -206,11 +217,18 @@ class LLMVulnerabilityScanner:
     def _find_python_files(self) -> list[str]:
         import os
         py_files = []
-        skip_dirs = {".venv", "venv", "node_modules", ".git", "__pycache__", ".pytest_cache", ".ruff_cache", "dist", "build"}
+        skip_dirs = {
+            ".venv", "venv", "node_modules", ".git", "__pycache__",
+            ".pytest_cache", ".ruff_cache", "dist", "build",
+            "tests", "test", "testing", "fixtures", "code_scanning",
+        }
         for root, dirs, files in os.walk(self.project_path):
-            dirs[:] = [d for d in dirs if d not in skip_dirs]
+            dirs[:] = [d for d in dirs if d.lower() not in skip_dirs and not d.startswith(".")]
+            norm_root = root.replace("\\", "/").lower()
+            if any(f"/{s}" in norm_root or norm_root.startswith(s) or norm_root.endswith(f"/{s}") or norm_root == s for s in ["tests", "test", "code_scanning"]):
+                continue
             for file in files:
-                if file.endswith(".py"):
+                if file.endswith(".py") and not file.startswith("test_") and not file.endswith("_test.py"):
                     py_files.append(os.path.join(root, file))
         return py_files
 

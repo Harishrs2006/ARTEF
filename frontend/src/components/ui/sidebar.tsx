@@ -4,6 +4,7 @@ import * as React from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { cn } from "@/lib/utils";
+import { Button } from "@/components/ui/button";
 import {
   LayoutDashboard,
   FlaskConical,
@@ -13,18 +14,15 @@ import {
   FileText,
   BarChart3,
   Settings,
-  Users,
   Shield,
   ChevronLeft,
   ChevronRight,
-  Menu,
-  X,
+  Plus,
   ShieldCheck,
   Code2,
   Network,
   Activity,
   Bug,
-  Zap,
 } from "lucide-react";
 
 const navigation = [
@@ -48,23 +46,36 @@ const navigation = [
 interface SidebarProps {
   isCollapsed: boolean;
   onToggle: () => void;
+  isMobileOpen?: boolean;
+  onCloseMobile?: () => void;
   className?: string;
 }
 
-export const Sidebar: React.FC<SidebarProps> = ({ isCollapsed, onToggle, className }: SidebarProps) => {
+export const Sidebar: React.FC<SidebarProps> = ({
+  isCollapsed,
+  onToggle,
+  isMobileOpen = false,
+  onCloseMobile,
+  className,
+}) => {
   const pathname = usePathname();
 
   return (
     <aside
       className={cn(
-        "fixed left-0 top-0 z-40 h-screen border-r bg-card transition-all duration-300 flex flex-col",
-        isCollapsed ? "w-16" : "w-64",
+        "fixed left-0 top-0 z-50 h-screen border-r bg-card transition-all duration-300 flex flex-col",
+        // On mobile the sidebar is off-canvas until it is explicitly opened.
+        "lg:translate-x-0",
+        isCollapsed ? "lg:w-16" : "lg:w-64",
+        "w-64",
+        isMobileOpen ? "translate-x-0" : "-translate-x-full lg:translate-x-0",
         className
       )}
+      aria-label="Sidebar"
     >
       <div className="flex h-16 items-center justify-between border-b px-4">
         {!isCollapsed && (
-          <Link href="/dashboard" className="flex items-center gap-2">
+          <Link href="/dashboard" className="flex items-center gap-2" onClick={onCloseMobile}>
             <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary text-primary-foreground">
               <Shield className="h-5 w-5" />
             </div>
@@ -89,12 +100,13 @@ export const Sidebar: React.FC<SidebarProps> = ({ isCollapsed, onToggle, classNa
             <Link
               key={item.name}
               href={item.href}
+              onClick={onCloseMobile}
               className={cn(
                 "flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors",
                 isActive
                   ? "bg-primary text-primary-foreground shadow-sm"
                   : "text-muted-foreground hover:bg-accent hover:text-accent-foreground",
-                isCollapsed && "justify-center"
+                isCollapsed && "lg:justify-center"
               )}
               title={isCollapsed ? item.name : undefined}
             >
@@ -112,13 +124,13 @@ export const Sidebar: React.FC<SidebarProps> = ({ isCollapsed, onToggle, classNa
               Quick Actions
             </p>
             <Button variant="outline" className="w-full justify-start gap-2" asChild>
-              <Link href="/runs/new">
+              <Link href="/runs/new" onClick={onCloseMobile}>
                 <Plus className="h-4 w-4" />
                 <span>New Evaluation</span>
               </Link>
             </Button>
             <Button variant="outline" className="w-full justify-start gap-2" asChild>
-              <Link href="/suites/new">
+              <Link href="/suites/new" onClick={onCloseMobile}>
                 <Plus className="h-4 w-4" />
                 <span>Create Suite</span>
               </Link>
@@ -126,13 +138,12 @@ export const Sidebar: React.FC<SidebarProps> = ({ isCollapsed, onToggle, classNa
           </div>
         ) : (
           <Button variant="outline" size="icon" className="w-full" asChild title="Quick Actions">
-            <Link href="/runs/new"><Plus className="h-4 w-4" /></Link>
+            <Link href="/runs/new" onClick={onCloseMobile}>
+              <Plus className="h-4 w-4" />
+            </Link>
           </Button>
         )}
       </div>
     </aside>
   );
-}
-
-import { Button } from "@/components/ui/button";
-import { Plus } from "lucide-react";
+};

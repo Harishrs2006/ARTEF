@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 
 from app.api.deps import (
@@ -65,8 +65,8 @@ class BaselineItemResponse(BaseModel):
 @router.get("", response_model=list[BaselineResponse], include_in_schema=False)
 @router.get("/", response_model=list[BaselineResponse])
 async def list_baselines(
-    skip: int = 0,
-    limit: int = 100,
+    skip: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=1000),
     suite_id: UUID | None = None,
     baseline_repo: BaselineRepository = Depends(get_baseline_repo),
     current_user: TokenData = Depends(

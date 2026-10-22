@@ -1,6 +1,6 @@
-﻿from functools import lru_cache
+from functools import lru_cache
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -16,19 +16,19 @@ class Settings(BaseSettings):
     APP_VERSION: str = "1.0.0"
     ENVIRONMENT: str = "development"
     DEBUG: bool = True
-    SECRET_KEY: str = Field(..., min_length=32)
+    SECRET_KEY: str = Field(default="dev-secret-key-minimum-32-characters-long", min_length=32)
     API_V1_PREFIX: str = "/api/v1"
 
-    DATABASE_URL: str
+    DATABASE_URL: str = "sqlite+aiosqlite:///./redteam_dev.db"
     DATABASE_POOL_SIZE: int = 20
     DATABASE_MAX_OVERFLOW: int = 10
     DATABASE_POOL_TIMEOUT: int = 30
 
-    REDIS_URL: str
+    REDIS_URL: str = "redis://localhost:6379/0"
     REDIS_MAX_CONNECTIONS: int = 50
 
-    CELERY_BROKER_URL: str
-    CELERY_RESULT_BACKEND: str
+    CELERY_BROKER_URL: str = "redis://localhost:6379/1"
+    CELERY_RESULT_BACKEND: str = "redis://localhost:6379/2"
     CELERY_TASK_SERIALIZER: str = "json"
     CELERY_RESULT_SERIALIZER: str = "json"
     CELERY_ACCEPT_CONTENT: list[str] = ["json"]
@@ -89,8 +89,9 @@ class Settings(BaseSettings):
     @field_validator("S3_ACCESS_KEY", "S3_SECRET_KEY")
     @classmethod
     def validate_s3_credentials(cls, v: str, info) -> str:
-        if info.data.get("STORAGE_BACKEND") == "s3" and not v:
-            raise ValueError("S3 credentials required when STORAGE_BACKEND=s3")
+        # NOTE: `info.data` only contains the fields declared *before* this one,
+        # so STORAGE_BACKEND cannot be read reliably here. The cross-field
+        # check lives in `validate_production_configuration` instead.
         return v
 
     JWT_ALGORITHM: str = "RS256"
@@ -109,6 +110,11 @@ class Settings(BaseSettings):
 
     RATE_LIMIT_REQUESTS: int = 100
     RATE_LIMIT_WINDOW_SECONDS: int = 60
+    # Comma-separated list of proxy addresses whose X-Forwarded-For header may
+    # be trusted. Defaults to loopback only, which is correct for a local
+    # development server; configure the real load-balancer addresses in a
+    # container deployment.
+    TRUSTED_PROXY_IPS: str = "127.0.0.1,::1"
 
     JUDGE_TEMPERATURE: float = 0.0
     JUDGE_MAX_TOKENS: int = 2048
@@ -175,6 +181,45 @@ class Settings(BaseSettings):
         if isinstance(v, list):
             return v
         return [origin.strip() for origin in v.split(",") if origin.strip()]
+
+    @model_validator(mode="after")
+    def validate_production_configuration(self) -> "Settings":
+        """Fail fast on a configuration that is unsafe in production.
+
+        These checks run once, at startup, instead of failing later on a
+        per-request basis with an opaque error.
+        """
+        if not self.is_production:
+            return self
+
+        if len(self.SECRET_KEY) < 32:
+            raise ValueError("SECRET_KEY must be at least 32 characters in production")
+
+        if "*" in self.cors_origins_list:
+            raise ValueError(
+                "CORS_ORIGINS must not contain '*' in production when credentials are allowed"
+            )
+
+        if self.CORS_ALLOW_CREDENTIALS and not self.cors_origins_list:
+            raise ValueError(
+                "CORS_ORIGINS must list the allowed origins when credentials are enabled"
+            )
+
+        if self.STORAGE_BACKEND == "s3" and not (self.S3_ACCESS_KEY and self.S3_SECRET_KEY):
+            raise ValueError("S3 credentials are required when STORAGE_BACKEND=s3")
+
+        if self.EVAL_MODE == "local":
+            raise ValueError(
+                "EVAL_MODE=local uses the deterministic mock judge and must not be used "
+                "in production; set EVAL_MODE=provider"
+            )
+
+        if self.DEV_MOCK_JUDGE or self.DEV_MOCK_TARGET_AGENT:
+            raise ValueError(
+                "DEV_MOCK_JUDGE and DEV_MOCK_TARGET_AGENT must be disabled in production"
+            )
+
+        return self
 
     @field_validator("TARGET_AGENT_ALLOWED_HOSTS")
     @classmethod

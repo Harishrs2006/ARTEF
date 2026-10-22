@@ -18,16 +18,26 @@ COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 RUN pnpm install --frozen-lockfile
 
 COPY . .
+# `output: "standalone"` in next.config.mjs produces the server bundle that
+# the runner stage copies. The flag is opt-in so that a local Windows build
+# is not blocked by the pnpm symlink recreation.
+ENV NEXT_OUTPUT_STANDALONE=true
 RUN pnpm build
 
 FROM base AS runner
 
 ENV NODE_ENV=production
+ENV PORT=3000
+ENV HOSTNAME=0.0.0.0
 
-# output: "standalone" in next.config.mjs produces a self-contained server.js
-COPY --from=builder /app/public ./public
-COPY --from=builder /app/.next/standalone ./
-COPY --from=builder /app/.next/static ./.next/static
+# Run as an unprivileged user.
+RUN addgroup -g 1001 -S nodejs && adduser -S nextjs -u 1001
+
+COPY --from=builder --chown=nextjs:nodejs /app/public ./public
+COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
+COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
+
+USER nextjs
 
 EXPOSE 3000
 

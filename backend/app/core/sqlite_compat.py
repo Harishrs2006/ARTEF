@@ -1,4 +1,4 @@
-﻿"""
+"""
 SQLite compatibility shim for PostgreSQL-specific SQLAlchemy types.
 Import this early (before any models) to replace JSONB, ARRAY, UUID.
 """
@@ -85,18 +85,5 @@ if IS_SQLITE:
     @event.listens_for(Engine, "connect")
     def set_sqlite_json_serializer(dbapi_connection, connection_record):
         pass
-
-try:
-    import bcrypt
-    if not hasattr(bcrypt, "__about__"):
-        bcrypt.__about__ = types.SimpleNamespace(__version__="4.0.0")
-    if not getattr(bcrypt, "_has_72_patch", False):
-        _orig_hashpw = bcrypt.hashpw
-        bcrypt.hashpw = lambda p, s: _orig_hashpw(p[:72], s)
-        _orig_checkpw = bcrypt.checkpw
-        bcrypt.checkpw = lambda p, s: _orig_checkpw(p[:72], s)
-        bcrypt._has_72_patch = True
-except Exception:
-    pass
 
 

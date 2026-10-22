@@ -19,8 +19,17 @@ class TargetAgentRepository(BaseRepository[TargetAgent]):
             skip=skip, limit=limit, filters={"allowed": True, "status": AgentStatus.ACTIVE}
         )
 
+    async def list_usable(self, skip: int = 0, limit: int = 100) -> list[TargetAgent]:
+        """Active agents that are permitted to be evaluated.
+
+        TargetAgent is not scoped to a test suite, so callers that need "the
+        agent for this suite" must resolve the agent from the cell
+        configuration (``target_agent_id``) and fall back to this list.
+        """
+        return await self.list_active(skip=skip, limit=limit)
+
     async def get_by_endpoint(self, endpoint_url: str) -> TargetAgent | None:
         result = await self.session.execute(
             select(TargetAgent).where(TargetAgent.endpoint_url == endpoint_url)
         )
-        return result.scalar_one_or_none()
+        return result.scalars().first()

@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """Create an admin user for ARTEF.
 
 This bootstrap script intentionally fails closed: credentials must be provided via

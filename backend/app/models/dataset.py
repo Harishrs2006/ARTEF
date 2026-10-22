@@ -1,4 +1,4 @@
-﻿from datetime import datetime
+from datetime import datetime
 from enum import Enum
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
@@ -18,16 +18,11 @@ from sqlalchemy import Enum as SQLEnum
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.types import UUIDString
+from app.domain.enums import DatasetStatus
 from app.models.user import Base
 
 if TYPE_CHECKING:
     from app.models.test_suite import TestSuite
-
-
-class DatasetStatus(str, Enum):
-    DRAFT = "draft"
-    ACTIVE = "active"
-    ARCHIVED = "archived"
 
 
 class Dataset(Base):

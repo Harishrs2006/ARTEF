@@ -146,22 +146,68 @@ class TestCase(Base):
         back_populates="test_case", lazy="dynamic"
     )
 
-    @property
-    def expected_behavior(self) -> dict[str, Any]:
-        """The expected behavior in the same shape suites are submitted in."""
-        behavior: dict[str, Any] = {"type": self.expected_behavior_type.value}
-        if self.matcher_config:
-            behavior["matcher"] = self.matcher_config
-        if self.rubric_config:
-            behavior["rubric"] = self.rubric_config
-        return behavior
-
     __table_args__ = (
         UniqueConstraint(
             "suite_id", "test_case_id", "version", name="uq_test_case_suite_id_version"
         ),
         Index("ix_test_cases_suite_category", "suite_id", "category"),
     )
+
+    def __init__(self, **kwargs: Any) -> None:
+        # ``metadata`` is a reserved SQLAlchemy attribute (Base.metadata), so the
+        # mapped column is exposed as ``test_case_metadata``. Accept the plain
+        # ``metadata=`` keyword used by the API/service layer and translate it.
+        if "metadata" in kwargs:
+            value = kwargs.pop("metadata")
+            if value is not None and not isinstance(value, dict):
+                value = value.model_dump() if hasattr(value, "model_dump") else dict(value)
+            kwargs["test_case_metadata"] = value
+        super().__init__(**kwargs)
+
+    @property
+    def expected_behavior(self) -> dict[str, Any]:
+        """Composite view over the split expected_behavior_* columns.
+
+        The behaviour is stored as three columns (type + matcher + rubric);
+        this property reassembles them in the shape suites are submitted in
+        (empty matcher/rubric omitted, so the value can be posted back as-is).
+        """
+        behavior: dict[str, Any] = {
+            "type": (
+                self.expected_behavior_type.value
+                if hasattr(self.expected_behavior_type, "value")
+                else self.expected_behavior_type
+            )
+        }
+        if self.matcher_config:
+            behavior["matcher"] = self.matcher_config
+        if self.rubric_config:
+            behavior["rubric"] = self.rubric_config
+        return behavior
+
+    @expected_behavior.setter
+    def expected_behavior(self, value: Any) -> None:
+        """Persist an ExpectedBehavior value object into the split columns."""
+        if value is None:
+            return
+        if isinstance(value, dict):
+            data = value
+            behavior_type = data.get("type")
+            matcher = data.get("matcher", data.get("matcher_config"))
+            rubric = data.get("rubric", data.get("rubric_config"))
+        else:
+            behavior_type = getattr(value, "type", None)
+            matcher = getattr(value, "matcher", None)
+            rubric = getattr(value, "rubric", None)
+
+        if behavior_type is not None:
+            self.expected_behavior_type = ExpectedBehaviorType(behavior_type)
+        self.matcher_config = (
+            matcher.model_dump() if hasattr(matcher, "model_dump") else matcher
+        )
+        self.rubric_config = (
+            rubric.model_dump() if hasattr(rubric, "model_dump") else rubric
+        )
 
 
 class TestCaseVersion(Base):

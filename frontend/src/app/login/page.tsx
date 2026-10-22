@@ -1,30 +1,49 @@
 "use client";
 
-import { useState, useEffect } from "react";
-import { useRouter } from "next/navigation";
+import { useState, useEffect, Suspense } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { useAuth, getAccessToken } from "@/lib/auth";
+import { useAuth } from "@/lib/auth";
 import { handleApiError } from "@/lib/api";
 import { Shield, Lock, User, AlertTriangle, Loader2, Eye, EyeOff, ArrowLeft, AlertCircle } from "lucide-react";
 
-export default function LoginPage() {
+/**
+ * Only relative, same-origin paths are accepted as a post-login destination.
+ * An absolute URL here would be an open redirect: an attacker could craft
+ * `/login?next=https://evil.example` and the user would land on a hostile
+ * page right after a successful login.
+ */
+function safeNextPath(raw: string | null): string {
+  if (!raw) return "/dashboard";
+  if (!raw.startsWith("/") || raw.startsWith("//")) return "/dashboard";
+  return raw;
+}
+
+function LoginForm() {
   const router = useRouter();
-  const { login, isLoading, isAuthenticated } = useAuth();
+  const searchParams = useSearchParams();
+  const { login, isLoading, status } = useAuth();
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
 
+  const nextPath = safeNextPath(searchParams.get("next"));
+
   useEffect(() => {
-    if (getAccessToken()) {
-      router.replace("/dashboard");
+    // Only a *validated* session skips the login form. A token that merely
+    // exists in localStorage may be expired, and redirecting on it would
+    // dump the user on a dashboard that fails every request instead of
+    // letting them sign in again.
+    if (status === "authenticated") {
+      router.replace(nextPath);
     }
-  }, [router]);
+  }, [status, nextPath, router]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -33,7 +52,7 @@ export default function LoginPage() {
 
     try {
       await login(username, password);
-      router.push("/dashboard");
+      router.push(nextPath);
     } catch (err) {
       setError(handleApiError(err));
     } finally {
@@ -253,16 +272,16 @@ export default function LoginPage() {
             <div className="pt-6 border-t border-white/20">
               <div className="flex items-center gap-6 text-sm">
                 <div>
-                  <p className="text-2xl font-bold">45+</p>
-                  <p className="text-blue-100">Attack Vectors</p>
+                  <p className="text-2xl font-bold">19</p>
+                  <p className="text-blue-100">Attack Categories</p>
                 </div>
                 <div>
-                  <p className="text-2xl font-bold">99.4%</p>
-                  <p className="text-blue-100">Judge Accuracy</p>
+                  <p className="text-2xl font-bold">100+</p>
+                  <p className="text-blue-100">API Endpoints</p>
                 </div>
                 <div>
-                  <p className="text-2xl font-bold">&lt;12ms</p>
-                  <p className="text-blue-100">Latency</p>
+                  <p className="text-2xl font-bold">On-Prem</p>
+                  <p className="text-blue-100">Self-Hosted</p>
                 </div>
               </div>
             </div>
@@ -270,5 +289,19 @@ export default function LoginPage() {
         </div>
       </div>
     </div>
+  );
+}
+
+export default function LoginPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="flex min-h-screen items-center justify-center">
+          <div className="h-8 w-8 animate-spin rounded-full border-b-2 border-primary" />
+        </div>
+      }
+    >
+      <LoginForm />
+    </Suspense>
   );
 }

@@ -39,7 +39,7 @@ class TestGetCurrentUser:
         with pytest.raises(HTTPException) as exc_info:
             await get_current_user(
                 MagicMock(scopes=[]),
-                token="invalid.token.value",
+                token="invalid.token.value",  # nosec: test dummy token
             )
         assert exc_info.value.status_code in [401, 500]
 

@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
-import { useRouter } from "next/navigation";
+
+import { useTheme } from "next-themes";
 import { DashboardLayout } from "@/components/ui/dashboard-layout";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -13,11 +14,11 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { api } from "@/lib/api";
+import { api, handleApiError } from "@/lib/api";
 import { formatDate } from "@/lib/utils";
-import { useAuth, getAccessToken } from "@/lib/auth";
-import { User, Shield, Key, Database, Server, Bell, Save, Loader2, Badge as BadgeIcon, Edit, Trash2, Plus } from "lucide-react";
+import { useAuth } from "@/lib/auth";
+import { useAuthGuard } from "@/hooks/useAuthGuard";
+import { User, Shield, Key, Database, Save, Loader2, Edit, Trash2, Plus, AlertTriangle } from "lucide-react";
 
 interface UserInfo {
   id: string;
@@ -29,6 +30,25 @@ interface UserInfo {
   last_login: string | null;
   created_at: string;
   roles: string[];
+}
+
+interface SystemConfig {
+  app_name: string;
+  app_version: string;
+  environment: string;
+  eval_mode: string;
+  judge_model: string;
+  generator_model: string;
+  planner_model: string;
+  embedding_model: string;
+  cost_per_run_limit: number;
+  cost_daily_limit: number;
+  retention_days: {
+    transcripts: number;
+    critical_findings: number;
+    reports: number;
+    audit_logs: number;
+  };
 }
 
 interface FeatureFlag {
@@ -55,22 +75,37 @@ interface AuditLog {
 }
 
 export default function SettingsPage() {
-  const router = useRouter();
-  const { isAuthenticated, isLoading, user } = useAuth();
+  const { user } = useAuth();
+  const { ready, authenticated } = useAuthGuard();
+  const { theme, setTheme } = useTheme();
+  // The theme is only known in the browser. Until the component has
+  // mounted the server and the client would render different markup.
+  const [mounted, setMounted] = useState(false);
   const [userInfo, setUserInfo] = useState<UserInfo | null>(null);
   const [featureFlags, setFeatureFlags] = useState<FeatureFlag[]>([]);
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
+  const [systemConfig, setSystemConfig] = useState<SystemConfig | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [profileError, setProfileError] = useState<string | null>(null);
+  const [emailDraft, setEmailDraft] = useState("");
+  const [fullNameDraft, setFullNameDraft] = useState("");
   const [activeTab, setActiveTab] = useState("profile");
   const [showCreateFlagDialog, setShowCreateFlagDialog] = useState(false);
   const [newFlag, setNewFlag] = useState({ name: "", description: "", enabled: false, rollout_percentage: 0, target_roles: [] });
   const [editingFlag, setEditingFlag] = useState<FeatureFlag | null>(null);
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [passwordMessage, setPasswordMessage] = useState<string | null>(null);
+  const [passwordError, setPasswordError] = useState<string | null>(null);
+  const [changingPassword, setChangingPassword] = useState(false);
 
   const fetchUserInfo = useCallback(async () => {
     try {
       const res = await api.get("/users/me");
       setUserInfo(res.data);
+      setEmailDraft(res.data?.email ?? "");
+      setFullNameDraft(res.data?.full_name ?? "");
     } catch (error) {
       console.error("Failed to fetch user info:", error);
     }
@@ -94,33 +129,80 @@ export default function SettingsPage() {
     }
   }, []);
 
+  const fetchSystemConfig = useCallback(async () => {
+    try {
+      const res = await api.get("/settings/config");
+      setSystemConfig(res.data);
+    } catch (error) {
+      console.error("Failed to fetch system config:", error);
+    }
+  }, []);
+
   useEffect(() => {
-    const token = getAccessToken();
-    if (token) {
-      fetchUserInfo();
-      fetchFeatureFlags();
-      fetchAuditLogs();
+    setMounted(true);
+  }, []);
+
+  useEffect(() => {
+    if (!ready || !authenticated) return;
+    void fetchUserInfo();
+    void fetchFeatureFlags();
+    void fetchAuditLogs();
+    void fetchSystemConfig();
+  }, [ready, authenticated, fetchUserInfo, fetchFeatureFlags, fetchAuditLogs, fetchSystemConfig]);
+
+  /**
+   * Change the signed-in user's password.
+   *
+   * The button previously had no handler, so the form could never be
+   * submitted and the value was silently discarded.
+   */
+  const handleChangePassword = async () => {
+    if (!currentPassword || !newPassword) {
+      setPasswordError("Both the current and the new password are required");
+      setPasswordMessage(null);
       return;
     }
-    if (!isLoading && !isAuthenticated) {
-      router.replace("/login");
-    } else if (!isLoading && isAuthenticated) {
-      fetchUserInfo();
-      fetchFeatureFlags();
-      fetchAuditLogs();
+    setChangingPassword(true);
+    setPasswordError(null);
+    setPasswordMessage(null);
+    try {
+      const res = await api.post("/users/me/password", {
+        current_password: currentPassword,
+        new_password: newPassword,
+      });
+      setPasswordMessage(res.data?.message ?? "Password updated successfully");
+      setCurrentPassword("");
+      setNewPassword("");
+    } catch (err) {
+      setPasswordError(handleApiError(err));
+    } finally {
+      setChangingPassword(false);
     }
-  }, [isAuthenticated, isLoading, fetchUserInfo, fetchFeatureFlags, fetchAuditLogs, router]);
+  };
 
+  /**
+   * Persist a profile change.
+   *
+   * Text fields commit on blur rather than on every keystroke: the previous
+   * implementation issued one PATCH request per character typed.
+   */
   const handleUpdateProfile = async (data: Partial<UserInfo>) => {
     setSaving(true);
+    setProfileError(null);
     try {
       await api.patch("/users/me", data);
       setUserInfo(prev => prev ? { ...prev, ...data } : null);
-    } catch (error) {
-      console.error("Failed to update profile:", error);
+    } catch (err) {
+      setProfileError(handleApiError(err));
     } finally {
       setSaving(false);
     }
+  };
+
+  const handleProfileBlur = async (field: "email" | "full_name", value: string) => {
+    if (!userInfo) return;
+    if (userInfo[field] === value) return;
+    await handleUpdateProfile({ [field]: value });
   };
 
   const handleCreateFlag = async () => {
@@ -138,15 +220,14 @@ export default function SettingsPage() {
     }
   };
 
-  const handleUpdateFlag = async () => {
-    if (!editingFlag) return;
+  const handleUpdateFlag = async (flag: FeatureFlag) => {
     setSaving(true);
     try {
-      await api.put(`/settings/feature-flags/${editingFlag.id}`, editingFlag);
+      await api.put(`/settings/feature-flags/${flag.id}`, flag);
       setEditingFlag(null);
-      fetchFeatureFlags();
+      await fetchFeatureFlags();
     } catch (error) {
-      console.error("Failed to update feature flag:", error);
+      setProfileError(handleApiError(error));
     } finally {
       setSaving(false);
     }
@@ -162,7 +243,7 @@ export default function SettingsPage() {
     }
   };
 
-  if (isLoading && !getAccessToken()) {
+  if (!ready || !authenticated) {
     return (
       <DashboardLayout>
         <div className="flex h-[calc(100vh-4rem)] items-center justify-center">
@@ -191,6 +272,11 @@ export default function SettingsPage() {
           </TabsList>
 
           <TabsContent value="profile">
+            {profileError && (
+              <p className="mb-4 flex items-center gap-1.5 text-sm text-destructive">
+                <AlertTriangle className="h-3.5 w-3.5" /> {profileError}
+              </p>
+            )}
             <div className="grid gap-6 md:grid-cols-3">
               <Card>
                 <CardHeader>
@@ -202,8 +288,9 @@ export default function SettingsPage() {
                     <Label htmlFor="email">Email</Label>
                     <Input
                       id="email"
-                      value={userInfo?.email || ""}
-                      onChange={(e) => handleUpdateProfile({ email: e.target.value })}
+                      value={emailDraft}
+                      onChange={(e) => setEmailDraft(e.target.value)}
+                      onBlur={(e) => handleProfileBlur("email", e.target.value)}
                       disabled={!userInfo}
                     />
                   </div>
@@ -212,16 +299,17 @@ export default function SettingsPage() {
                     <Input
                       id="username"
                       value={userInfo?.username || ""}
-                      onChange={(e) => handleUpdateProfile({ username: e.target.value })}
-                      disabled={!userInfo}
+                      disabled
+                      readOnly
                     />
                   </div>
                   <div>
                     <Label htmlFor="full_name">Full Name</Label>
                     <Input
                       id="full_name"
-                      value={userInfo?.full_name || ""}
-                      onChange={(e) => handleUpdateProfile({ full_name: e.target.value })}
+                      value={fullNameDraft}
+                      onChange={(e) => setFullNameDraft(e.target.value)}
+                      onBlur={(e) => handleProfileBlur("full_name", e.target.value)}
                       disabled={!userInfo}
                     />
                   </div>
@@ -260,23 +348,46 @@ export default function SettingsPage() {
                 </CardHeader>
                 <CardContent className="space-y-4">
                   <div>
-                    <Label htmlFor="password">Change Password</Label>
+                    <Label htmlFor="current_password">Current Password</Label>
                     <Input
-                      id="password"
+                      id="current_password"
                       type="password"
-                      placeholder="Enter new password"
-                      autoComplete="new-password"
+                      placeholder="Enter your current password"
+                      autoComplete="current-password"
+                      value={currentPassword}
+                      onChange={(e) => setCurrentPassword(e.target.value)}
                     />
-                    <p className="text-sm text-muted-foreground mt-1">Leave blank to keep current password</p>
                   </div>
-                  <Button>
-                    <Save className="mr-2 h-4 w-4" /> Update Password
+                  <div>
+                    <Label htmlFor="new_password">New Password</Label>
+                    <Input
+                      id="new_password"
+                      type="password"
+                      placeholder="Enter a new password"
+                      autoComplete="new-password"
+                      value={newPassword}
+                      onChange={(e) => setNewPassword(e.target.value)}
+                    />
+                    <p className="text-sm text-muted-foreground mt-1">
+                      At least 12 characters, with mixed case, a digit and a special character.
+                    </p>
+                  </div>
+                  {passwordError && (
+                    <p className="flex items-center gap-1.5 text-sm text-destructive">
+                      <AlertTriangle className="h-3.5 w-3.5" /> {passwordError}
+                    </p>
+                  )}
+                  {passwordMessage && (
+                    <p className="text-sm text-green-600">{passwordMessage}</p>
+                  )}
+                  <Button onClick={handleChangePassword} disabled={changingPassword}>
+                    {changingPassword ? (
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    ) : (
+                      <Save className="mr-2 h-4 w-4" />
+                    )}
+                    Update Password
                   </Button>
-                  <div className="border-t pt-4">
-                    <h4 className="font-medium mb-2">API Keys</h4>
-                    <p className="text-sm text-muted-foreground">Manage your API keys for programmatic access</p>
-                    <Button variant="outline" className="mt-2"><Key className="mr-2 h-4 w-4" /> Generate API Key</Button>
-                  </div>
                 </CardContent>
               </Card>
 
@@ -291,21 +402,16 @@ export default function SettingsPage() {
                       <p className="font-medium">Dark Mode</p>
                       <p className="text-sm text-muted-foreground">Use dark theme</p>
                     </div>
-                    <Switch defaultChecked={false} />
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <p className="font-medium">Email Notifications</p>
-                      <p className="text-sm text-muted-foreground">Receive email alerts</p>
-                    </div>
-                    <Switch defaultChecked={true} />
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <p className="font-medium">Auto-refresh Dashboard</p>
-                      <p className="text-sm text-muted-foreground">Automatically refresh data</p>
-                    </div>
-                    <Switch defaultChecked={false} />
+                    <Switch
+                      id="dark_mode"
+                      // next-themes returns undefined during server
+                      // rendering and the resolved theme in the browser.
+                      // Rendering the switch before the client has mounted
+                      // produced a hydration mismatch, so the control is
+                      // only rendered once the theme is known.
+                      checked={mounted && theme === "dark"}
+                      onCheckedChange={(checked) => setTheme(checked ? "dark" : "light")}
+                    />
                   </div>
                 </CardContent>
               </Card>
@@ -315,54 +421,77 @@ export default function SettingsPage() {
           <TabsContent value="security">
             <Card>
               <CardHeader>
-                <CardTitle>System Security Settings</CardTitle>
-                <CardDescription>Configure security policies</CardDescription>
+                <CardTitle>System Configuration</CardTitle>
+                <CardDescription>
+                  Read-only view of the effective server configuration. Values are managed
+                  through environment variables, not from the browser.
+                </CardDescription>
               </CardHeader>
-              <CardContent className="space-y-6">
-                <div>
-                  <h4 className="font-medium mb-4">Rate Limiting</h4>
-                  <div className="grid gap-4 md:grid-cols-2">
+              <CardContent>
+                {!systemConfig ? (
+                  <p className="text-sm text-muted-foreground">Loading configuration...</p>
+                ) : (
+                  <dl className="grid gap-x-6 gap-y-3 sm:grid-cols-2">
                     <div>
-                      <Label htmlFor="rate_limit_requests">Requests per Window</Label>
-                      <Input id="rate_limit_requests" type="number" defaultValue={100} />
+                      <dt className="text-sm text-muted-foreground">Application</dt>
+                      <dd className="text-sm font-medium">
+                        {systemConfig.app_name} v{systemConfig.app_version}
+                      </dd>
                     </div>
                     <div>
-                      <Label htmlFor="rate_limit_window">Window (seconds)</Label>
-                      <Input id="rate_limit_window" type="number" defaultValue={60} />
-                    </div>
-                  </div>
-                </div>
-                <div>
-                  <h4 className="font-medium mb-4">SSRF Protection</h4>
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <p className="font-medium">Block Private IPs</p>
-                      <p className="text-sm text-muted-foreground">Prevent requests to private IP ranges</p>
-                    </div>
-                    <Switch defaultChecked={true} />
-                  </div>
-                  <div className="flex items-center justify-between mt-4">
-                    <div>
-                      <p className="font-medium">Allowed Hosts</p>
-                      <p className="text-sm text-muted-foreground">Comma-separated list of allowed hosts</p>
-                    </div>
-                    <Input placeholder="allowed-host.example, api.internal" className="w-64" />
-                  </div>
-                </div>
-                <div>
-                  <h4 className="font-medium mb-4">Cost Limits</h4>
-                  <div className="grid gap-4 md:grid-cols-2">
-                    <div>
-                      <Label htmlFor="cost_per_run">Per Run Limit (USD)</Label>
-                      <Input id="cost_per_run" type="number" step="0.01" defaultValue={5.0} />
+                      <dt className="text-sm text-muted-foreground">Environment</dt>
+                      <dd className="text-sm font-medium">{systemConfig.environment}</dd>
                     </div>
                     <div>
-                      <Label htmlFor="cost_daily">Daily Limit (USD)</Label>
-                      <Input id="cost_daily" type="number" step="0.01" defaultValue={100.0} />
+                      <dt className="text-sm text-muted-foreground">Evaluation mode</dt>
+                      <dd className="text-sm font-medium">{systemConfig.eval_mode}</dd>
                     </div>
-                  </div>
-                </div>
-                <Button><Save className="mr-2 h-4 w-4" /> Save Security Settings</Button>
+                    <div>
+                      <dt className="text-sm text-muted-foreground">Judge model</dt>
+                      <dd className="text-sm font-medium font-mono text-xs">
+                        {systemConfig.judge_model}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt className="text-sm text-muted-foreground">Generator model</dt>
+                      <dd className="text-sm font-medium font-mono text-xs">
+                        {systemConfig.generator_model}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt className="text-sm text-muted-foreground">Planner model</dt>
+                      <dd className="text-sm font-medium font-mono text-xs">
+                        {systemConfig.planner_model}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt className="text-sm text-muted-foreground">Embedding model</dt>
+                      <dd className="text-sm font-medium font-mono text-xs">
+                        {systemConfig.embedding_model}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt className="text-sm text-muted-foreground">Cost limit per run</dt>
+                      <dd className="text-sm font-medium">
+                        ${systemConfig.cost_per_run_limit.toFixed(2)}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt className="text-sm text-muted-foreground">Daily cost limit</dt>
+                      <dd className="text-sm font-medium">
+                        ${systemConfig.cost_daily_limit.toFixed(2)}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt className="text-sm text-muted-foreground">Retention (days)</dt>
+                      <dd className="text-sm font-medium">
+                        transcripts {systemConfig.retention_days.transcripts}, reports{" "}
+                        {systemConfig.retention_days.reports}, audit logs{" "}
+                        {systemConfig.retention_days.audit_logs}
+                      </dd>
+                    </div>
+                  </dl>
+                )}
               </CardContent>
             </Card>
           </TabsContent>
@@ -399,14 +528,18 @@ export default function SettingsPage() {
                             <Switch
                               checked={flag.enabled}
                               onCheckedChange={(checked) => {
-                                setEditingFlag({ ...flag, enabled: checked });
-                                handleUpdateFlag();
+                                // The previous implementation called
+                                // setEditingFlag(...) and handleUpdateFlag()
+                                // in the same tick, so the update read the
+                                // previous state from the closure and the
+                                // toggle was a no-op.
+                                void handleUpdateFlag({ ...flag, enabled: checked });
                               }}
                             />
                             <Button variant="ghost" size="icon" onClick={() => setEditingFlag(flag)}>
                               <Edit className="h-4 w-4" />
                             </Button>
-                            <Button variant="ghost" size="icon" onClick={() => handleDeleteFlag(flag.id)}>
+                            <Button variant="ghost" size="icon" onClick={() => void handleDeleteFlag(flag.id)}>
                               <Trash2 className="h-4 w-4 text-destructive" />
                             </Button>
                           </div>
@@ -469,6 +602,85 @@ export default function SettingsPage() {
                     <Button variant="outline" onClick={() => setShowCreateFlagDialog(false)}>Cancel</Button>
                     <Button onClick={handleCreateFlag} disabled={saving || !newFlag.name}>
                       {saving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : "Create"}
+                    </Button>
+                  </DialogFooter>
+                </DialogContent>
+              </Dialog>
+
+              <Dialog
+                open={editingFlag !== null}
+                onOpenChange={(open) => {
+                  if (!open) setEditingFlag(null);
+                }}
+              >
+                <DialogContent>
+                  <DialogHeader>
+                    <DialogTitle>Edit Feature Flag</DialogTitle>
+                  </DialogHeader>
+                  {editingFlag && (
+                    <div className="space-y-4 py-4">
+                      <div>
+                        <Label htmlFor="edit_flag_name">Name</Label>
+                        <Input
+                          id="edit_flag_name"
+                          value={editingFlag.name}
+                          onChange={(e) =>
+                            setEditingFlag({ ...editingFlag, name: e.target.value })
+                          }
+                        />
+                      </div>
+                      <div>
+                        <Label htmlFor="edit_flag_description">Description</Label>
+                        <Textarea
+                          id="edit_flag_description"
+                          value={editingFlag.description ?? ""}
+                          onChange={(e) =>
+                            setEditingFlag({ ...editingFlag, description: e.target.value })
+                          }
+                          rows={2}
+                        />
+                      </div>
+                      <div className="grid gap-4 md:grid-cols-2">
+                        <div>
+                          <Label htmlFor="edit_flag_rollout">Rollout Percentage</Label>
+                          <Input
+                            id="edit_flag_rollout"
+                            type="number"
+                            min={0}
+                            max={100}
+                            value={editingFlag.rollout_percentage}
+                            onChange={(e) =>
+                              setEditingFlag({
+                                ...editingFlag,
+                                rollout_percentage: parseInt(e.target.value) || 0,
+                              })
+                            }
+                          />
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <Switch
+                            id="edit_flag_enabled"
+                            checked={editingFlag.enabled}
+                            onCheckedChange={(checked) =>
+                              setEditingFlag({ ...editingFlag, enabled: checked })
+                            }
+                          />
+                          <Label htmlFor="edit_flag_enabled">Enabled</Label>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                  <DialogFooter>
+                    <Button variant="outline" onClick={() => setEditingFlag(null)}>
+                      Cancel
+                    </Button>
+                    <Button
+                      onClick={() => {
+                        if (editingFlag) void handleUpdateFlag(editingFlag);
+                      }}
+                      disabled={saving}
+                    >
+                      {saving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : "Save"}
                     </Button>
                   </DialogFooter>
                 </DialogContent>

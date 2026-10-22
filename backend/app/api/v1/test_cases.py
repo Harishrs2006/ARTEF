@@ -1,6 +1,6 @@
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
 from app.api.deps import TokenData, get_case_repo, require_role
@@ -29,7 +29,6 @@ class TestCaseUpdate(BaseModel):
     input: str | None = None
     expected_behavior: dict | None = None
     metadata: dict | None = None
-
 
 class TestCaseResponse(BaseModel):
     id: UUID
@@ -61,8 +60,8 @@ def _build_case_response(c) -> TestCaseResponse:
 @router.get("/suite/{suite_id}", response_model=list[TestCaseResponse])
 async def list_test_cases(
     suite_id: UUID,
-    skip: int = 0,
-    limit: int = 100,
+    skip: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=1000),
     category: TestCaseCategory | None = None,
     case_repo: TestCaseRepository = Depends(get_case_repo),
     current_user: TokenData = Depends(
@@ -87,9 +86,17 @@ async def create_test_case(
     if existing:
         raise HTTPException(status_code=409, detail="Test case ID already exists in this suite")
 
+    payload = test_case.model_dump()
+    expected_behavior = payload.pop("expected_behavior", None) or {}
+    metadata = payload.pop("metadata", None) or {}
+
     new_case = TestCase(
         suite_id=suite_id,
-        **test_case.model_dump(),
+        **payload,
+        expected_behavior_type=expected_behavior.get("type"),
+        matcher_config=expected_behavior.get("matcher", expected_behavior.get("matcher_config")),
+        rubric_config=expected_behavior.get("rubric", expected_behavior.get("rubric_config")),
+        metadata=metadata,
         created_by=UUID(current_user.sub),
     )
     new_case = await case_repo.create(new_case)
@@ -125,6 +132,8 @@ async def update_test_case(
     for key, value in update_data.items():
         if key == "metadata":
             case.test_case_metadata = value
+        elif key == "expected_behavior":
+            case.expected_behavior = value or {}
         else:
             setattr(case, key, value)
 

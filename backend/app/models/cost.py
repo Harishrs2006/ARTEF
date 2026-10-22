@@ -20,8 +20,12 @@ class CostEntryModel(Base):
     __tablename__ = "cost_entries"
 
     id = Column(UUIDString(), primary_key=True, default=lambda: str(uuid4()))
-    run_id = Column(UUIDString(), ForeignKey("runs.id"), nullable=True, index=True)
-    test_case_id = Column(UUIDString(), ForeignKey("test_cases.id"), nullable=True, index=True)
+    # The cascade keeps the retention job (`delete_old_runs`) working: without
+    # it, deleting a run that has cost rows raises an IntegrityError.
+    run_id = Column(UUIDString(), ForeignKey("runs.id", ondelete="CASCADE"), nullable=True, index=True)
+    test_case_id = Column(
+        UUIDString(), ForeignKey("test_cases.id", ondelete="CASCADE"), nullable=True, index=True
+    )
     category = Column(String(50), nullable=False, index=True)
     provider = Column(String(100), nullable=False, index=True)
     model = Column(String(100), nullable=False, index=True)

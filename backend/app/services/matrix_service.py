@@ -1,4 +1,4 @@
-﻿from datetime import datetime
+from datetime import datetime
 from uuid import UUID
 
 from app.core.config import get_settings
@@ -68,11 +68,11 @@ class MatrixService:
     async def create_matrix(
         self,
         name: str,
-        suite_id: UUID,
-        test_case_ids: list[UUID],
+        suite_id: UUID | str,
+        test_case_ids: list[UUID | str],
         configurations: list[MatrixConfiguration],
         description: str | None = None,
-        created_by: UUID | None = None,
+        created_by: UUID | str | None = None,
     ) -> EvaluationMatrix:
         """Create a new evaluation matrix."""
         suite = await self.suite_repo.get(suite_id)
@@ -153,11 +153,13 @@ class MatrixService:
         queued = sum(1 for c in cells if c.status == RunStatus.QUEUED)
         running = sum(1 for c in cells if c.status == RunStatus.RUNNING)
 
-        if failed > 0 and completed + failed == len(cells):
-            overall = RunStatus.FAILED
-        elif completed == len(cells):
+        if len(cells) == 0:
             overall = RunStatus.COMPLETED
-        elif running > 0 or queued < len(cells):
+        elif completed + failed == len(cells):
+            overall = RunStatus.FAILED if failed > 0 else RunStatus.COMPLETED
+        elif running > 0:
+            overall = RunStatus.RUNNING
+        elif completed > 0 or failed > 0:
             overall = RunStatus.RUNNING
         else:
             overall = RunStatus.QUEUED
@@ -188,7 +190,14 @@ class MatrixService:
             if cell.status != RunStatus.QUEUED:
                 continue
 
-            await self._execute_cell(cell, matrix)
+            # A failing cell must not abort the remaining cells: the matrix
+            # would be left permanently wedged in RUNNING with the remaining
+            # cells still QUEUED. The failure is recorded on the cell and the
+            # loop continues.
+            try:
+                await self._execute_cell(cell, matrix)
+            except Exception:
+                continue
 
         completed = sum(1 for c in cells if c.status == RunStatus.COMPLETED)
         failed = sum(1 for c in cells if c.status in (RunStatus.FAILED, RunStatus.CANCELLED))
@@ -196,10 +205,10 @@ class MatrixService:
         matrix.completed_cells = completed
         matrix.failed_cells = failed
 
-        if failed > 0 and completed + failed == len(cells):
-            matrix.status = RunStatus.FAILED
-        elif completed == len(cells):
+        if len(cells) == 0:
             matrix.status = RunStatus.COMPLETED
+        elif completed + failed == len(cells):
+            matrix.status = RunStatus.FAILED if failed > 0 else RunStatus.COMPLETED
         else:
             matrix.status = RunStatus.RUNNING
 
@@ -222,9 +231,12 @@ class MatrixService:
 
             agent_id = UUID(config.get("target_agent_id")) if config.get("target_agent_id") else None
             if not agent_id:
-                agents = await self.agent_repo.list_by_suite(matrix.suite_id)
+                agents = await self.agent_repo.list_usable()
                 if not agents:
-                    raise ValidationError("No target agent configured for matrix cell")
+                    raise ValidationError(
+                        "No target agent configured for matrix cell: set 'target_agent_id' "
+                        "in the cell configuration or register an active target agent"
+                    )
                 agent_id = agents[0].id
 
             agent = await self.agent_repo.get(agent_id)
@@ -235,7 +247,7 @@ class MatrixService:
                 target_agent_id=agent.id,
                 suite_id=matrix.suite_id,
                 suite_version=matrix.suite_version,
-                framework_version="1.0.0",
+                framework_version=settings.APP_VERSION,
                 model_versions={config.get("model_provider", ""): config.get("model_id", "")},
                 prompt_versions={},
                 config_snapshot={
@@ -252,14 +264,12 @@ class MatrixService:
             await self.cell_repo.session.flush()
 
             from app.repositories.runs import ExecutionRepository, ResultRepository
-            from app.services.cost_tracking import CostTracker
 
             exec_repo = ExecutionRepository(self.cell_repo.session)
             result_repo = ResultRepository(self.cell_repo.session)
-            cost_tracker = CostTracker(self.cell_repo.session)
 
             execution_service = ExecutionService(
-                self.run_repo, exec_repo, result_repo, self.agent_repo, self.case_repo, cost_tracker
+                self.run_repo, exec_repo, result_repo, self.agent_repo, self.case_repo
             )
             await execution_service.execute_run(run.id)
 
@@ -285,8 +295,13 @@ class MatrixService:
                 if gate_result.decision in ("BLOCK", "FAIL"):
                     for finding in findings:
                         if finding.severity.value in ("critical", "high"):
+                            regression = await self.regression_repo.get_by_run_and_test_case(
+                                run.id, finding.test_case_id
+                            )
+                            if not regression:
+                                continue
                             await self.review_repo.create_review(
-                                regression_id=UUID(finding.test_case_id),
+                                regression_id=regression.id,
                                 run_id=run.id,
                                 severity=finding.severity,
                                 confidence=0.8,

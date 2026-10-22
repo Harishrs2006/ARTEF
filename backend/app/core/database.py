@@ -77,14 +77,18 @@ def create_task_session_maker():
 
 @asynccontextmanager
 async def get_async_session():
+    """Yield a session, committing on clean exit and rolling back on failure.
+
+    Routes only call ``flush()``; without the commit below the implicit
+    transaction is discarded when the session closes and every write is lost.
+    """
     async with async_session_maker() as session:
         try:
             yield session
+            await session.commit()
         except Exception:
             await session.rollback()
             raise
-        finally:
-            await session.close()
 
 
 @asynccontextmanager
@@ -96,8 +100,6 @@ async def get_session_context():
         except Exception:
             await session.rollback()
             raise
-        finally:
-            await session.close()
 
 
 async def init_db():

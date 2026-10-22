@@ -107,10 +107,19 @@ const SelectLabel = React.forwardRef<
 ));
 SelectLabel.displayName = SelectPrimitive.Label.displayName;
 
+/**
+ * Sentinel used for the "no selection" option.
+ *
+ * Radix throws `A <Select.Item /> must have a value prop that is not an empty
+ * string.` when an item is given an empty value, so an explicit sentinel is
+ * required for "All ..." options.
+ */
+const SELECT_ALL_VALUE = "__all__";
+
 const SelectItem = React.forwardRef<
   React.ElementRef<typeof SelectPrimitive.Item>,
   React.ComponentPropsWithoutRef<typeof SelectPrimitive.Item>
->(({ className, children, disabled, ...props }, ref) => (
+>(({ className, children, disabled, value, ...props }, ref) => (
   <SelectPrimitive.Item
     ref={ref}
     className={cn(
@@ -118,6 +127,7 @@ const SelectItem = React.forwardRef<
       className
     )}
     disabled={disabled}
+    value={value === "" ? SELECT_ALL_VALUE : value}
     {...props}
   >
     <span className="absolute left-2 flex h-3.5 w-3.5 items-center justify-center">
@@ -153,4 +163,5 @@ export {
   SelectSeparator,
   SelectScrollUpButton,
   SelectScrollDownButton,
+  SELECT_ALL_VALUE,
 };

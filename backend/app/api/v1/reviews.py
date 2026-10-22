@@ -1,8 +1,8 @@
-﻿from datetime import datetime
+from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 
 from app.api.deps import (
@@ -39,6 +39,7 @@ class ReviewAssignRequest(BaseModel):
 class ReviewUpdateRequest(BaseModel):
     label: ReviewLabel | None = None
     notes: str | None = None
+    assigned_to: UUID | None = None
 
 
 class EvidenceItem(BaseModel):
@@ -86,8 +87,8 @@ class ReviewLabelResponse(BaseModel):
 @router.get("", response_model=list[ReviewResponse], include_in_schema=False)
 @router.get("/", response_model=list[ReviewResponse])
 async def list_reviews(
-    skip: int = 0,
-    limit: int = 100,
+    skip: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=1000),
     status: ReviewStatus | None = None,
     assignee_id: UUID | None = None,
     review_repo: ReviewQueueRepository = Depends(get_review_repo),
@@ -292,6 +293,8 @@ async def update_review(
         ):
             review.status = ReviewStatus.RESOLVED
             review.resolved_at = datetime.utcnow()
+    if update.assigned_to is not None:
+        review.assigned_to = str(update.assigned_to)
     review.updated_at = datetime.utcnow()
     await review_repo.session.flush()
 

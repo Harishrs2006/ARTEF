@@ -14,7 +14,7 @@ if TYPE_CHECKING:
 
 class EvaluationMatrixRepository(BaseRepository[EvaluationMatrix]):
     def __init__(self, session: "AsyncSession"):
-        super().__init__(session, EvaluationMatrix)
+        super().__init__(EvaluationMatrix, session)
 
     async def get_with_cells(self, matrix_id: UUID) -> EvaluationMatrix | None:
         stmt = (
@@ -59,7 +59,7 @@ class EvaluationMatrixRepository(BaseRepository[EvaluationMatrix]):
 
 class EvaluationMatrixCellRepository(BaseRepository[EvaluationMatrixCell]):
     def __init__(self, session: "AsyncSession"):
-        super().__init__(session, EvaluationMatrixCell)
+        super().__init__(EvaluationMatrixCell, session)
 
     async def get_by_matrix_and_test_case(
         self, matrix_id: UUID, test_case_id: UUID

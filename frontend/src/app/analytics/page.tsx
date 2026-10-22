@@ -1,32 +1,60 @@
-﻿"use client";
+"use client";
 
-import { useEffect, useState, useCallback } from "react";
-import { useRouter } from "next/navigation";
+import { useEffect, useState, useCallback, useMemo } from "react";
+
 import { DashboardLayout } from "@/components/ui/dashboard-layout";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { api } from "@/lib/api";
-import { formatDate, formatDuration, formatCost } from "@/lib/utils";
-import { useAuth, getAccessToken } from "@/lib/auth";
-import {
-  BarChart,
-  Bar,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip,
-  ResponsiveContainer,
-  LineChart,
-  Line,
-  PieChart,
-  Pie,
-  Cell,
-  AreaChart,
-  Area,
-} from "recharts";
-import { TrendingUp, TrendingDown, Target, AlertTriangle, CheckCircle, DollarSign, Clock, Filter, RefreshCw } from "lucide-react";
+import { formatCost } from "@/lib/utils";
+import { useAuthGuard } from "@/hooks/useAuthGuard";
+import dynamic from "next/dynamic";
+
+// Recharts is a large dependency tree. Loading the charts on demand keeps it
+// out of the initial route payload.
+const RunsAreaChart = dynamic(
+  () => import("@/components/charts").then((m) => m.RunsAreaChart),
+  { ssr: false, loading: () => <ChartSkeleton /> }
+);
+const PassRateChart = dynamic(
+  () => import("@/components/charts").then((m) => m.PassRateChart),
+  { ssr: false, loading: () => <ChartSkeleton /> }
+);
+const RegressionChart = dynamic(
+  () => import("@/components/charts").then((m) => m.RegressionChart),
+  { ssr: false, loading: () => <ChartSkeleton /> }
+);
+const CostChart = dynamic(
+  () => import("@/components/charts").then((m) => m.CostChart),
+  { ssr: false, loading: () => <ChartSkeleton /> }
+);
+const SeverityChart = dynamic(
+  () => import("@/components/charts").then((m) => m.SeverityChart),
+  { ssr: false, loading: () => <ChartSkeleton /> }
+);
+const LatencyChart = dynamic(
+  () => import("@/components/charts").then((m) => m.LatencyChart),
+  { ssr: false, loading: () => <ChartSkeleton /> }
+);
+const CountBarChart = dynamic(
+  () => import("@/components/charts").then((m) => m.CountBarChart),
+  { ssr: false, loading: () => <ChartSkeleton /> }
+);
+const CostAreaChart = dynamic(
+  () => import("@/components/charts").then((m) => m.CostAreaChart),
+  { ssr: false, loading: () => <ChartSkeleton /> }
+);
+const CategoryPieChart = dynamic(
+  () => import("@/components/charts").then((m) => m.CategoryPieChart),
+  { ssr: false, loading: () => <ChartSkeleton /> }
+);
+
+function ChartSkeleton() {
+  return <div className="h-full w-full animate-pulse rounded-md bg-muted/40" />;
+}
+import { TrendingUp, Target, AlertTriangle, DollarSign, RefreshCw } from "lucide-react";
 
 interface RunSummary {
   id: string;
@@ -57,8 +85,7 @@ interface AnalyticsData {
 }
 
 export default function AnalyticsPage() {
-  const router = useRouter();
-  const { isAuthenticated, isLoading } = useAuth();
+  const { ready, authenticated } = useAuthGuard();
   const [analytics, setAnalytics] = useState<AnalyticsData | null>(null);
   const [loading, setLoading] = useState(true);
   const [timeRange, setTimeRange] = useState("7d");
@@ -86,23 +113,82 @@ export default function AnalyticsPage() {
   }, [timeRange]);
 
   useEffect(() => {
-    const token = getAccessToken();
-    if (token) { fetchAnalytics(); return; }
-    if (!isLoading && !isAuthenticated) router.replace("/login");
-    else if (!isLoading && isAuthenticated) fetchAnalytics();
-  }, [isAuthenticated, isLoading, fetchAnalytics, router]);
+    if (!ready || !authenticated) return;
+    void fetchAnalytics();
+  }, [ready, authenticated, fetchAnalytics]);
 
   useEffect(() => {
-    if (!isAuthenticated || loading) return;
-    
+    if (!authenticated || loading) return;
+
     const interval = setInterval(() => {
       fetchAnalytics(true);
     }, 30000);
-    
-    return () => clearInterval(interval);
-  }, [isAuthenticated, loading, fetchAnalytics]);
 
-  if (isLoading && !getAccessToken()) {
+    return () => clearInterval(interval);
+  }, [authenticated, loading, fetchAnalytics]);
+
+  // The chart series are memoised: they were rebuilt on every render, which
+  // re-created six new arrays and forced every Recharts component to
+  // re-render even when the underlying data had not changed.
+  const formatDay = useCallback(
+    (date: string) => new Date(date).toLocaleDateString("en-US", { month: "short", day: "numeric" }),
+    []
+  );
+
+  const passRateData = useMemo(
+    () => analytics?.pass_rate_over_time?.map(d => ({ name: formatDay(d.date), value: d.rate })) || [],
+    [analytics?.pass_rate_over_time, formatDay]
+  );
+
+  const regressionData = useMemo(
+    () => analytics?.regressions_over_time?.map(d => ({ name: formatDay(d.date), value: d.count })) || [],
+    [analytics?.regressions_over_time, formatDay]
+  );
+
+  const costData = useMemo(
+    () => analytics?.cost_over_time?.map(d => ({ name: formatDay(d.date), value: d.cost })) || [],
+    [analytics?.cost_over_time, formatDay]
+  );
+
+  const runsData = useMemo(
+    () => analytics?.runs_over_time?.map(d => ({ name: formatDay(d.date), value: d.count })) || [],
+    [analytics?.runs_over_time, formatDay]
+  );
+
+  const severityData = useMemo(
+    () =>
+      analytics?.severity_distribution?.map(d => ({
+        name: d.severity,
+        value: d.count,
+        color:
+          d.severity === "critical"
+            ? "#ef4444"
+            : d.severity === "high"
+              ? "#f97316"
+              : d.severity === "medium"
+                ? "#eab308"
+                : "#3b82f6",
+      })) || [],
+    [analytics?.severity_distribution]
+  );
+
+  const categoryData = useMemo(
+    () =>
+      analytics?.category_distribution?.map((d, i) => ({
+        name: d.category,
+        value: d.count,
+        color: ["#3b82f6", "#8b5cf6", "#ec4899", "#f97316", "#eab308", "#22c55e", "#06b6d4"][i % 7],
+      })) || [],
+    [analytics?.category_distribution]
+  );
+
+  // The period cost used to be reduced twice on every render.
+  const totalCost = useMemo(
+    () => (analytics?.cost_over_time ?? []).reduce((sum, d) => sum + d.cost, 0),
+    [analytics?.cost_over_time]
+  );
+
+  if (!ready || !authenticated) {
     return (
       <DashboardLayout>
         <div className="flex h-[calc(100vh-4rem)] items-center justify-center">
@@ -111,38 +197,6 @@ export default function AnalyticsPage() {
       </DashboardLayout>
     );
   }
-
-  const passRateData = analytics?.pass_rate_over_time?.map(d => ({
-    name: new Date(d.date).toLocaleDateString("en-US", { month: "short", day: "numeric" }),
-    value: d.rate,
-  })) || [];
-
-  const regressionData = analytics?.regressions_over_time?.map(d => ({
-    name: new Date(d.date).toLocaleDateString("en-US", { month: "short", day: "numeric" }),
-    value: d.count,
-  })) || [];
-
-  const costData = analytics?.cost_over_time?.map(d => ({
-    name: new Date(d.date).toLocaleDateString("en-US", { month: "short", day: "numeric" }),
-    value: d.cost,
-  })) || [];
-
-  const runsData = analytics?.runs_over_time?.map(d => ({
-    name: new Date(d.date).toLocaleDateString("en-US", { month: "short", day: "numeric" }),
-    value: d.count,
-  })) || [];
-
-  const severityData = analytics?.severity_distribution?.map(d => ({
-    name: d.severity,
-    value: d.count,
-    color: d.severity === "critical" ? "#ef4444" : d.severity === "high" ? "#f97316" : d.severity === "medium" ? "#eab308" : "#3b82f6",
-  })) || [];
-
-  const categoryData = analytics?.category_distribution?.map((d, i) => ({
-    name: d.category,
-    value: d.count,
-    color: ["#3b82f6", "#8b5cf6", "#ec4899", "#f97316", "#eab308", "#22c55e", "#06b6d4"][i % 7],
-  })) || [];
 
   return (
     <DashboardLayout>
@@ -223,7 +277,7 @@ export default function AnalyticsPage() {
             </CardHeader>
             <CardContent>
               <div className="text-2xl font-bold">
-                {analytics?.cost_over_time?.reduce((sum, d) => sum + d.cost, 0) ? formatCost(analytics.cost_over_time.reduce((sum, d) => sum + d.cost, 0)) : "N/A"}
+                {totalCost > 0 ? formatCost(totalCost) : "N/A"}
               </div>
               <p className="text-xs text-muted-foreground">{timeRange} period</p>
             </CardContent>
@@ -244,21 +298,7 @@ export default function AnalyticsPage() {
                 <CardHeader><CardTitle>Runs Over Time</CardTitle></CardHeader>
                 <CardContent>
                   <div className="h-80">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <AreaChart data={runsData}>
-                        <defs>
-                          <linearGradient id="colorRuns" x1="0" y1="0" x2="0" y2="1">
-                            <stop offset="5%" stopColor="hsl(var(--primary))" stopOpacity={0.3} />
-                            <stop offset="95%" stopColor="hsl(var(--primary))" stopOpacity={0} />
-                          </linearGradient>
-                        </defs>
-                        <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
-                        <XAxis dataKey="name" className="text-xs" />
-                        <YAxis className="text-xs" />
-                        <Tooltip contentStyle={{ backgroundColor: "hsl(var(--card))", border: "1px solid hsl(var(--border))", borderRadius: "8px" }} />
-                        <Area type="monotone" dataKey="value" stroke="hsl(var(--primary))" fillOpacity={1} fill="url(#colorRuns)" strokeWidth={2} />
-                      </AreaChart>
-                    </ResponsiveContainer>
+                    <RunsAreaChart data={runsData} />
                   </div>
                 </CardContent>
               </Card>
@@ -267,15 +307,7 @@ export default function AnalyticsPage() {
                 <CardHeader><CardTitle>Pass Rate Trend</CardTitle></CardHeader>
                 <CardContent>
                   <div className="h-80">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <LineChart data={passRateData}>
-                        <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
-                        <XAxis dataKey="name" className="text-xs" />
-                        <YAxis className="text-xs" domain={[0, 100]} />
-                        <Tooltip contentStyle={{ backgroundColor: "hsl(var(--card))", border: "1px solid hsl(var(--border))", borderRadius: "8px" }} />
-                        <Line type="monotone" dataKey="value" stroke="hsl(var(--primary))" strokeWidth={2} dot={{ r: 4 }} />
-                      </LineChart>
-                    </ResponsiveContainer>
+                    <PassRateChart data={passRateData} />
                   </div>
                 </CardContent>
               </Card>
@@ -284,15 +316,7 @@ export default function AnalyticsPage() {
                 <CardHeader><CardTitle>Regression Trend</CardTitle></CardHeader>
                 <CardContent>
                   <div className="h-80">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <BarChart data={regressionData}>
-                        <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
-                        <XAxis dataKey="name" className="text-xs" />
-                        <YAxis className="text-xs" />
-                        <Tooltip contentStyle={{ backgroundColor: "hsl(var(--card))", border: "1px solid hsl(var(--border))", borderRadius: "8px" }} />
-                        <Bar dataKey="value" fill="hsl(var(--destructive))" radius={[4, 4, 0, 0]} />
-                      </BarChart>
-                    </ResponsiveContainer>
+                    <RegressionChart data={regressionData} />
                   </div>
                 </CardContent>
               </Card>
@@ -301,15 +325,7 @@ export default function AnalyticsPage() {
                 <CardHeader><CardTitle>Cost Trend</CardTitle></CardHeader>
                 <CardContent>
                   <div className="h-80">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <LineChart data={costData}>
-                        <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
-                        <XAxis dataKey="name" className="text-xs" />
-                        <YAxis className="text-xs" />
-                        <Tooltip contentStyle={{ backgroundColor: "hsl(var(--card))", border: "1px solid hsl(var(--border))", borderRadius: "8px" }} />
-                        <Line type="monotone" dataKey="value" stroke="hsl(var(--secondary-foreground))" strokeWidth={2} dot={{ r: 4 }} />
-                      </LineChart>
-                    </ResponsiveContainer>
+                    <CostChart data={costData} />
                   </div>
                 </CardContent>
               </Card>
@@ -320,27 +336,7 @@ export default function AnalyticsPage() {
                 <CardHeader><CardTitle>Severity Distribution</CardTitle></CardHeader>
                 <CardContent>
                   <div className="h-64">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <PieChart>
-                        <Pie
-                          data={severityData.length > 0 ? severityData : [{ name: "None", value: 1, color: "hsl(var(--muted))" }]}
-                          cx="50%"
-                          cy="50%"
-                          innerRadius={60}
-                          outerRadius={100}
-                          paddingAngle={2}
-                          dataKey="value"
-                          nameKey="name"
-                          label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}
-                          labelLine={false}
-                        >
-                          {severityData.map((entry, index) => (
-                            <Cell key={`cell-${index}`} fill={entry.color} />
-                          ))}
-                        </Pie>
-                        <Tooltip contentStyle={{ backgroundColor: "hsl(var(--card))", border: "1px solid hsl(var(--border))", borderRadius: "8px" }} />
-                      </PieChart>
-                    </ResponsiveContainer>
+                    <SeverityChart data={severityData.length > 0 ? severityData : [{ name: "None", value: 1, color: "hsl(var(--muted))" }]} />
                   </div>
                 </CardContent>
               </Card>
@@ -349,27 +345,7 @@ export default function AnalyticsPage() {
                 <CardHeader><CardTitle>Category Distribution</CardTitle></CardHeader>
                 <CardContent>
                   <div className="h-64">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <PieChart>
-                        <Pie
-                          data={categoryData.length > 0 ? categoryData : [{ name: "None", value: 1, color: "hsl(var(--muted))" }]}
-                          cx="50%"
-                          cy="50%"
-                          innerRadius={60}
-                          outerRadius={100}
-                          paddingAngle={2}
-                          dataKey="value"
-                          nameKey="name"
-                          label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}
-                          labelLine={false}
-                        >
-                          {categoryData.map((entry, index) => (
-                            <Cell key={`cell-${index}`} fill={entry.color} />
-                          ))}
-                        </Pie>
-                        <Tooltip contentStyle={{ backgroundColor: "hsl(var(--card))", border: "1px solid hsl(var(--border))", borderRadius: "8px" }} />
-                      </PieChart>
-                    </ResponsiveContainer>
+                    <CategoryPieChart data={categoryData.length > 0 ? categoryData : [{ name: "None", value: 1, color: "hsl(var(--muted))" }]} />
                   </div>
                 </CardContent>
               </Card>
@@ -382,18 +358,10 @@ export default function AnalyticsPage() {
                 <CardHeader><CardTitle>Latency Over Time</CardTitle></CardHeader>
                 <CardContent>
                   <div className="h-80">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <LineChart data={analytics?.latency_over_time?.map(d => ({
-                        name: new Date(d.date).toLocaleDateString("en-US", { month: "short", day: "numeric" }),
-                        value: d.latency,
-                      })) || []}>
-                        <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
-                        <XAxis dataKey="name" className="text-xs" />
-                        <YAxis className="text-xs" />
-                        <Tooltip contentStyle={{ backgroundColor: "hsl(var(--card))", border: "1px solid hsl(var(--border))", borderRadius: "8px" }} formatter={(value: number) => [formatDuration(value), "Latency"]} />
-                        <Line type="monotone" dataKey="value" stroke="hsl(var(--accent-foreground))" strokeWidth={2} dot={{ r: 4 }} />
-                      </LineChart>
-                    </ResponsiveContainer>
+                    <LatencyChart data={analytics?.latency_over_time?.map(d => ({
+                      name: new Date(d.date).toLocaleDateString("en-US", { month: "short", day: "numeric" }),
+                      value: d.latency,
+                    })) || []} />
                   </div>
                 </CardContent>
               </Card>
@@ -402,15 +370,7 @@ export default function AnalyticsPage() {
                 <CardHeader><CardTitle>Tests per Run</CardTitle></CardHeader>
                 <CardContent>
                   <div className="h-80">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <BarChart data={runsData}>
-                        <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
-                        <XAxis dataKey="name" className="text-xs" />
-                        <YAxis className="text-xs" />
-                        <Tooltip contentStyle={{ backgroundColor: "hsl(var(--card))", border: "1px solid hsl(var(--border))", borderRadius: "8px" }} />
-                        <Bar dataKey="value" fill="hsl(var(--primary))" radius={[4, 4, 0, 0]} />
-                      </BarChart>
-                    </ResponsiveContainer>
+                    <CountBarChart data={runsData} />
                   </div>
                 </CardContent>
               </Card>
@@ -453,15 +413,10 @@ export default function AnalyticsPage() {
                 <CardHeader><CardTitle>Daily Cost Breakdown</CardTitle></CardHeader>
                 <CardContent>
                   <div className="h-80">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <BarChart data={costData.length > 0 ? costData : [{ name: "Day 1", value: 0 }]}>
-                        <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
-                        <XAxis dataKey="name" className="text-xs" />
-                        <YAxis className="text-xs" />
-                        <Tooltip contentStyle={{ backgroundColor: "hsl(var(--card))", border: "1px solid hsl(var(--border))", borderRadius: "8px" }} formatter={(value: number) => [formatCost(value), "Cost"]} />
-                        <Bar dataKey="value" fill="hsl(var(--secondary-foreground))" radius={[4, 4, 0, 0]} />
-                      </BarChart>
-                    </ResponsiveContainer>
+                    <CountBarChart
+                      data={costData.length > 0 ? costData : [{ name: "Day 1", value: 0 }]}
+                      fill="hsl(var(--secondary-foreground))"
+                    />
                   </div>
                 </CardContent>
               </Card>
@@ -470,24 +425,12 @@ export default function AnalyticsPage() {
                 <CardHeader><CardTitle>Cumulative Cost</CardTitle></CardHeader>
                 <CardContent>
                   <div className="h-80">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <AreaChart data={analytics?.cost_over_time?.map((d, i, arr) => ({
+                    <CostAreaChart
+                      data={analytics?.cost_over_time?.map((d, i, arr) => ({
                         name: new Date(d.date).toLocaleDateString("en-US", { month: "short", day: "numeric" }),
                         value: arr.slice(0, i + 1).reduce((sum, item) => sum + item.cost, 0),
-                      })) || [{ name: "Day 1", value: 0 }]}>
-                        <defs>
-                          <linearGradient id="colorCost" x1="0" y1="0" x2="0" y2="1">
-                            <stop offset="5%" stopColor="hsl(var(--secondary-foreground))" stopOpacity={0.3} />
-                            <stop offset="95%" stopColor="hsl(var(--secondary-foreground))" stopOpacity={0} />
-                          </linearGradient>
-                        </defs>
-                        <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
-                        <XAxis dataKey="name" className="text-xs" />
-                        <YAxis className="text-xs" />
-                        <Tooltip contentStyle={{ backgroundColor: "hsl(var(--card))", border: "1px solid hsl(var(--border))", borderRadius: "8px" }} formatter={(value: number) => [formatCost(value), "Cumulative Cost"]} />
-                        <Area type="monotone" dataKey="value" stroke="hsl(var(--secondary-foreground))" fillOpacity={1} fill="url(#colorCost)" strokeWidth={2} />
-                      </AreaChart>
-                    </ResponsiveContainer>
+                      })) || [{ name: "Day 1", value: 0 }]}
+                    />
                   </div>
                 </CardContent>
               </Card>

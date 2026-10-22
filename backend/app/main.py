@@ -1,8 +1,9 @@
-﻿from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field
 from starlette.middleware.base import BaseHTTPMiddleware
 
 import app.core.sqlite_compat
@@ -14,9 +15,31 @@ from app.core.logging import get_logger, setup_logging
 from app.core.rate_limit import rate_limit_dependency
 from app.core.security import TokenData, require_role
 from app.monitoring import security_metrics
+from app.providers.llm import LLMProviderFactory
 
 settings = get_settings()
 logger = get_logger(__name__)
+
+
+def _security_headers() -> dict[str, str]:
+    """Security headers applied to every response, including error responses."""
+    headers = {
+        "X-Content-Type-Options": "nosniff",
+        "X-Frame-Options": "DENY",
+        "X-XSS-Protection": "1; mode=block",
+        "Strict-Transport-Security": "max-age=31536000; includeSubDomains",
+        "Referrer-Policy": "strict-origin-when-cross-origin",
+        "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
+        "Content-Security-Policy": (
+            "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
+            "img-src 'self' data: https:; font-src 'self' data:; connect-src 'self'; "
+            "frame-ancestors 'none'"
+        ),
+    }
+    if settings.is_production:
+        headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
+        headers["Pragma"] = "no-cache"
+    return headers
 
 
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
@@ -24,16 +47,8 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request: Request, call_next):
         response = await call_next(request)
-        response.headers["X-Content-Type-Options"] = "nosniff"
-        response.headers["X-Frame-Options"] = "DENY"
-        response.headers["X-XSS-Protection"] = "1; mode=block"
-        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
-        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
-        response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
-        response.headers["Content-Security-Policy"] = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self'; frame-ancestors 'none'"
-        if settings.is_production:
-            response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
-            response.headers["Pragma"] = "no-cache"
+        for key, value in _security_headers().items():
+            response.headers[key] = value
         return response
 
 
@@ -47,6 +62,9 @@ async def lifespan(app: FastAPI):
     yield
 
     logger.info("application_shutting_down")
+    # The LLM providers hold an httpx connection pool each. They are closed
+    # here so that a graceful shutdown does not leak sockets.
+    await LLMProviderFactory.close_all()
     await close_db()
 
 
@@ -83,7 +101,14 @@ cors_origins = settings.cors_origins_list
 if settings.is_production and "*" in cors_origins:
     raise RuntimeError("Wildcard CORS origin not allowed in production with credentials")
 
-cors_regex = r"http://localhost:\d+" if settings.is_development else None
+# The development regex allows any localhost port to make credentialed
+# requests, which is broader than the configured CORS_ORIGINS list. It is
+# only enabled when the operator has not configured an explicit list.
+cors_regex = (
+    r"http://localhost:\d+"
+    if settings.is_development and not cors_origins
+    else None
+)
 
 app.add_middleware(
     CORSMiddleware,
@@ -114,17 +139,53 @@ async def monitoring_alerts(
     return security_metrics.get_alerts(severity=severity, limit=limit)
 
 
+class ClientErrorReport(BaseModel):
+    """A client-side error reported by the browser."""
+
+    type: str = Field(default="error", max_length=64)
+    message: str = Field(default="", max_length=2000)
+    source: str | None = Field(default=None, max_length=500)
+    stack: str | None = Field(default=None, max_length=8000)
+    timestamp: str | None = Field(default=None, max_length=64)
+
+
+@app.post("/api/v1/monitoring/client-errors", status_code=202)
+async def report_client_error(report: ClientErrorReport):
+    """Accept a client-side error report.
+
+    The endpoint is intentionally unauthenticated so that the browser can
+    report an error that happened before or during authentication. The
+    payload is size-limited, truncated and redacted server-side, and the
+    rate limiter applies to it like to any other route.
+    """
+    alert = security_metrics.record_client_error(
+        error_type=report.type,
+        message=report.message,
+        source=report.source,
+        stack=report.stack,
+    )
+    return {"recorded": True, "alert_id": alert["id"]}
+
+
 def _cors_headers_for_request(request: Request) -> dict[str, str]:
+    """CORS headers for error responses raised outside the CORS middleware.
+
+    The middleware already sets the headers on normal responses; this helper
+    only covers the exception path and mirrors the same allow-list.
+    """
     origin = request.headers.get("origin", "")
     if not origin:
         return {}
     cors_origins = settings.cors_origins_list
-    cors_regex = r"http://localhost:\d+" if settings.is_development else None
+    cors_regex = (
+        r"http://localhost:\d+" if settings.is_development and not cors_origins else None
+    )
     allowed = False
     if origin in cors_origins:
         allowed = True
     elif cors_regex:
         import re
+
         if re.match(cors_regex, origin):
             allowed = True
     if allowed:
@@ -140,6 +201,7 @@ def _cors_headers_for_request(request: Request) -> dict[str, str]:
 @app.exception_handler(RedTeamException)
 async def redteam_exception_handler(request: Request, exc: RedTeamException):
     headers = _cors_headers_for_request(request)
+    headers.update(_security_headers())
     return JSONResponse(
         status_code=exc.status_code,
         content=to_http_exception(exc).detail,
@@ -149,8 +211,17 @@ async def redteam_exception_handler(request: Request, exc: RedTeamException):
 
 @app.exception_handler(Exception)
 async def generic_exception_handler(request: Request, exc: Exception):
-    logger.error("unhandled_exception", error=str(exc), path=request.url.path, exc_info=True)
+    # The message is logged server-side only; the client receives a generic
+    # message so that stack traces, SQL fragments and configuration values are
+    # never returned to a public caller.
+    logger.error(
+        "unhandled_exception",
+        error_type=type(exc).__name__,
+        path=request.url.path,
+        exc_info=True,
+    )
     headers = _cors_headers_for_request(request)
+    headers.update(_security_headers())
     return JSONResponse(
         status_code=500,
         content={"code": "INTERNAL_ERROR", "message": "Internal server error"},

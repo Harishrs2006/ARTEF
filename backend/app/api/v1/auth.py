@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import get_current_active_user, get_db, get_user_repo
 from app.core.exceptions import AuthenticationError
 from app.core.logging import get_logger
+from app.core.password_policy import validate_password_strength
 from app.core.security import (
     TokenData,
     create_access_token,
@@ -15,10 +16,12 @@ from app.core.security import (
     decode_refresh_token,
     get_password_hash,
     get_scopes_for_roles,
+    needs_rehash,
+    resolve_user_roles,
     verify_password,
 )
-from app.models.user import User
-from app.repositories.users import UserRepository
+from app.models.user import Role, User
+from app.repositories.users import RoleRepository, UserRepository
 
 router = APIRouter()
 logger = get_logger(__name__)
@@ -61,7 +64,14 @@ async def login(
     if not user.is_active:
         raise AuthenticationError("Account is disabled")
 
-    roles = [role.name for role in user.roles]
+    # Transparently upgrade hashes created before the SHA-256 pre-hashing
+    # change so the full password entropy is preserved from now on.
+    if needs_rehash(request.password, user.hashed_password):
+        user.hashed_password = get_password_hash(request.password)
+        await db.flush()
+        logger.info("password_hash_upgraded", user_id=str(user.id))
+
+    roles = resolve_user_roles(user)
     scopes = get_scopes_for_roles(roles)
 
     access_token = create_access_token(
@@ -111,7 +121,7 @@ async def refresh_token(
     if not user.is_active:
         raise AuthenticationError("User account is disabled")
 
-    roles = [role.name for role in user.roles]
+    roles = resolve_user_roles(user)
     scopes = get_scopes_for_roles(roles)
 
     access_token = create_access_token(
@@ -160,26 +170,7 @@ async def register(
                     detail="Registration is disabled in production. Contact your administrator for an invitation.",
                 )
 
-    if len(request.password) < 12:
-        raise HTTPException(status_code=400, detail="Password must be at least 12 characters")
-    if request.password.lower() == request.password or request.password.upper() == request.password:
-        raise HTTPException(status_code=400, detail="Password must contain mixed case")
-    if not any(c.isdigit() for c in request.password):
-        raise HTTPException(status_code=400, detail="Password must contain at least one digit")
-    if not any(c in "!@#$%^&*()_+-=[]{}|;:,.<>?" for c in request.password):
-        raise HTTPException(status_code=400, detail="Password must contain at least one special character")
-
-    if request.username.lower() in request.password.lower():
-        raise HTTPException(status_code=400, detail="Password must not contain username")
-    if request.email.split("@")[0].lower() in request.password.lower():
-        raise HTTPException(status_code=400, detail="Password must not contain email")
-
-    COMMON_WEAK_PASSWORDS = {
-        "password123", "password12", "qwerty123", "admin123", "welcome123",
-        "changeme123", "letmein123", "monkey123", "dragon123", "master123"
-    }
-    if request.password.lower() in COMMON_WEAK_PASSWORDS:
-        raise HTTPException(status_code=400, detail="Password is too common - choose a stronger password")
+    validate_password_strength(request.password, request.username, request.email)
 
     if await user_repo.get_by_email(request.email):
         raise HTTPException(status_code=400, detail="Email already registered")
@@ -187,19 +178,40 @@ async def register(
     if await user_repo.get_by_username(request.username):
         raise HTTPException(status_code=400, detail="Username already taken")
 
+    # A newly registered account must carry a role. Without one the issued
+    # token had an empty scope list and every protected endpoint answered
+    # 403, so the user could sign in but not use the console.
+    #
+    # The very first account in a fresh installation becomes an admin;
+    # every later account gets the read-only "viewer" role. An admin can
+    # promote the account from the Settings page.
+    role_repo = RoleRepository(db)
+    is_first_user = await user_repo.count() == 0
+    default_role_name = "admin" if is_first_user else "viewer"
+    default_role = await role_repo.get_by_name(default_role_name)
+    if default_role is None:
+        default_role = Role(name=default_role_name, description=f"Auto-assigned {default_role_name} role")
+        db.add(default_role)
+        await db.flush()
+
     hashed_password = get_password_hash(request.password)
     user = User(
         email=request.email,
         username=request.username,
         hashed_password=hashed_password,
         full_name=request.full_name,
+        roles=[default_role],
     )
     user = await user_repo.create(user)
 
-    await db.commit()
-
-    roles = [role.name for role in user.roles]
+    # The roles are resolved *before* the commit: after `commit()` the
+    # instance is expired and reading `user.roles` triggers a lazy load
+    # outside the async context, which raises MissingGreenlet and turns the
+    # registration into a 500.
+    roles = resolve_user_roles(user)
     scopes = get_scopes_for_roles(roles)
+
+    await db.commit()
 
     access_token = create_access_token(
         data={

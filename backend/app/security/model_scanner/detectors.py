@@ -2,7 +2,10 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any
 
+from app.core.logging import get_logger
 from app.security.model_scanner.report import ScanFinding, SeverityLevel
+
+logger = get_logger(__name__)
 
 
 class BaseDetector(ABC):
@@ -60,6 +63,28 @@ class PickleDetector(BaseDetector):
             "eval", "exec", "compile", "__import__", "getattr", "apply", "call",
             "check_call", "check_output", "run", "Popen", "load", "loads",
         }
+        # Globals that only rebuild plain data (containers, dates, numbers, arrays, tensors).
+        # Any other imported callable runs when the file is loaded, so it is reported too.
+        builtin_types = {"set", "frozenset", "bytearray", "bytes", "complex", "slice", "range",
+                         "list", "dict", "tuple", "str", "int", "float", "bool"}
+        self.safe_globals = {
+            "builtins": builtin_types,
+            "__builtin__": builtin_types,
+            "collections": {"OrderedDict", "defaultdict", "deque", "Counter"},
+            "copyreg": {"_reconstructor"},
+            "copy_reg": {"_reconstructor"},
+            "_codecs": {"encode"},
+            "datetime": {"datetime", "date", "time", "timedelta", "timezone"},
+            "decimal": {"Decimal"},
+            "fractions": {"Fraction"},
+            "uuid": {"UUID"},
+            "numpy": {"ndarray", "dtype"},
+            "numpy.core.multiarray": {"_reconstruct", "scalar"},
+            "numpy._core.multiarray": {"_reconstruct", "scalar"},
+            "torch._utils": {"_rebuild_tensor", "_rebuild_tensor_v2", "_rebuild_parameter"},
+            "torch": {"FloatStorage", "DoubleStorage", "HalfStorage", "LongStorage", "IntStorage",
+                      "ShortStorage", "CharStorage", "ByteStorage", "BoolStorage", "BFloat16Storage"},
+        }
 
     async def scan(self, path: Path) -> list[ScanFinding]:
         findings = []
@@ -95,6 +120,8 @@ class PickleDetector(BaseDetector):
                 else:
                     continue
                 root = module.split(".")[0]
+                if name in self.safe_globals.get(module, ()):
+                    continue
                 if root in self.dangerous_modules or name in self.dangerous_callables:
                     findings.append(
                         ScanFinding(
@@ -102,6 +129,20 @@ class PickleDetector(BaseDetector):
                             finding_type="dangerous_import",
                             severity=SeverityLevel.CRITICAL,
                             description=f"Pickle imports {module}.{name}, which can execute code when loaded",
+                            file_path=str(file_path),
+                            metadata={"module": module, "name": name},
+                        )
+                    )
+                else:
+                    findings.append(
+                        ScanFinding(
+                            detector="PickleDetector",
+                            finding_type="untrusted_global",
+                            severity=SeverityLevel.CRITICAL,
+                            description=(
+                                f"Pickle {opcode.name} imports {module}.{name}, which is not a known "
+                                "data type and is called when the file is loaded"
+                            ),
                             file_path=str(file_path),
                             metadata={"module": module, "name": name},
                         )
@@ -240,7 +281,7 @@ class PyTorchDetector(BaseDetector):
                 import pickle
 
                 with open(file_path, "rb") as f:
-                    obj = pickle.load(f)
+                    obj = pickle.load(f)  # nosec B301
                     if hasattr(obj, "__dict__") and "state_dict" in obj.__dict__:
                         findings.append(
                             ScanFinding(

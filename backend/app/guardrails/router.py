@@ -138,7 +138,7 @@ async def update_guardrail(
     for key, value in update_data.items():
         setattr(guardrail, key, value)
 
-    await db.add(guardrail)
+    db.add(guardrail)
     await db.commit()
     await db.refresh(guardrail)
     return guardrail

@@ -1,7 +1,7 @@
-﻿from datetime import datetime
+from datetime import datetime
 from uuid import UUID
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_db, require_role
@@ -48,7 +48,7 @@ def get_scoring_service():
 router = APIRouter()
 
 
-@router.post("/matrices", response_model=EvaluationMatrix, status_code=201)
+@router.post("/", response_model=EvaluationMatrix, status_code=201)
 async def create_matrix(
     name: str,
     suite_id: UUID,
@@ -115,12 +115,12 @@ async def create_matrix(
     return EvaluationMatrix.model_validate(matrix)
 
 
-@router.get("/matrices", response_model=list[EvaluationMatrix])
+@router.get("/", response_model=list[EvaluationMatrix])
 async def list_matrices(
     suite_id: UUID | None = None,
     status: str | None = None,
-    skip: int = 0,
-    limit: int = 100,
+    skip: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=1000),
     session: AsyncSession = Depends(get_db),
     current_user: TokenData = Depends(require_role(["admin", "safety_engineer", "ml_engineer", "qa_engineer", "viewer"])),
 ):
@@ -135,7 +135,7 @@ async def list_matrices(
     return [EvaluationMatrix.model_validate(m) for m in matrices]
 
 
-@router.get("/matrices/{matrix_id}", response_model=EvaluationMatrix)
+@router.get("/{matrix_id}", response_model=EvaluationMatrix)
 async def get_matrix(
     matrix_id: UUID,
     session: AsyncSession = Depends(get_db),
@@ -149,7 +149,7 @@ async def get_matrix(
     return EvaluationMatrix.model_validate(matrix)
 
 
-@router.get("/matrices/{matrix_id}/summary", response_model=MatrixExecutionSummary)
+@router.get("/{matrix_id}/summary", response_model=MatrixExecutionSummary)
 async def get_matrix_summary(
     matrix_id: UUID,
     session: AsyncSession = Depends(get_db),
@@ -191,7 +191,7 @@ async def get_matrix_summary(
     )
 
 
-@router.post("/matrices/{matrix_id}/execute", response_model=EvaluationMatrix)
+@router.post("/{matrix_id}/execute", response_model=EvaluationMatrix)
 async def execute_matrix(
     matrix_id: UUID,
     session: AsyncSession = Depends(get_db),
@@ -203,7 +203,6 @@ async def execute_matrix(
     run_repo = RunRepository(session)
     exec_repo = ExecutionRepository(session)
     result_repo = ResultRepository(session)
-    suite_repo = TestSuiteRepository(session)
     case_repo = TestCaseRepository(session)
     agent_repo = TargetAgentRepository(session)
     baseline_repo = BaselineRepository(session)
@@ -277,9 +276,12 @@ async def _execute_cell(
 
         agent_id = UUID(config.get("target_agent_id")) if config.get("target_agent_id") else None
         if not agent_id:
-            agents = await agent_repo.list_by_suite(matrix.suite_id)
+            agents = await agent_repo.list_usable()
             if not agents:
-                raise ValidationError("No target agent configured for matrix cell")
+                raise ValidationError(
+                    "No target agent configured for matrix cell: set 'target_agent_id' "
+                    "in the cell configuration or register an active target agent"
+                )
             agent_id = agents[0].id
 
         agent = await agent_repo.get(agent_id)
@@ -333,8 +335,13 @@ async def _execute_cell(
             if gate_result.decision in ("BLOCK", "FAIL"):
                 for finding in findings:
                     if finding.severity.value in ("critical", "high"):
+                        regression = await regression_repo.get_by_run_and_test_case(
+                            run.id, finding.test_case_id
+                        )
+                        if not regression:
+                            continue
                         await review_repo.create_review(
-                            regression_id=UUID(finding.test_case_id),
+                            regression_id=regression.id,
                             run_id=run.id,
                             severity=finding.severity,
                             confidence=0.8,
@@ -354,7 +361,7 @@ async def _execute_cell(
         await session.flush()
 
 
-@router.get("/matrices/{matrix_id}/cells", response_model=list[EvaluationCell])
+@router.get("/{matrix_id}/cells", response_model=list[EvaluationCell])
 async def list_matrix_cells(
     matrix_id: UUID,
     status: str | None = None,
@@ -367,7 +374,7 @@ async def list_matrix_cells(
     return [EvaluationCell.model_validate(c) for c in cells]
 
 
-@router.get("/matrices/{matrix_id}/cells/{cell_id}", response_model=EvaluationCell)
+@router.get("/{matrix_id}/cells/{cell_id}", response_model=EvaluationCell)
 async def get_matrix_cell(
     matrix_id: UUID,
     cell_id: UUID,

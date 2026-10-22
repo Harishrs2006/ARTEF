@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python
+#!/usr/bin/env python
 """
 ARTEF Setup Verification Script
 Verifies that all prerequisites and configurations are correct before deployment.

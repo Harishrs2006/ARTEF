@@ -3,9 +3,12 @@ const apiProxyTarget = (process.env.API_PROXY_TARGET || process.env.NEXT_PUBLIC_
 const normalizedApiProxyTarget = apiProxyTarget.endsWith("/api/v1") ? apiProxyTarget : `${apiProxyTarget}/api/v1`;
 
 const nextConfig = {
-  reactStrictMode: false,
-  // Standalone server for the Docker image only: on Windows it needs symlink privileges.
-  output: process.env.NEXT_OUTPUT_STANDALONE === "true" ? "standalone" : undefined,
+  reactStrictMode: false, // Disable strict mode to reduce web vitals
+  // The Docker image copies `.next/standalone`, so the standalone output is
+  // required there. It is opt-in because the standalone bundler recreates
+  // the pnpm symlink farm, which requires elevated privileges on Windows and
+  // fails the local build with EPERM. The Dockerfile sets the flag.
+  ...(process.env.NEXT_OUTPUT_STANDALONE === "true" ? { output: "standalone" } : {}),
   eslint: {
     // Lint runs as its own CI step (`pnpm lint`) instead of inside `next build`.
     ignoreDuringBuilds: true,
@@ -14,7 +17,7 @@ const nextConfig = {
     ignoreBuildErrors: false,
   },
   experimental: {
-    optimizePackageImports: ["lucide-react", "@radix-ui/react-icons"],
+    optimizePackageImports: ["lucide-react"],
   },
   images: {
     remotePatterns: [{ protocol: "http", hostname: "localhost" }],

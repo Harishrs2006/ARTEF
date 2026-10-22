@@ -5,11 +5,11 @@ import { useRouter } from "next/navigation";
 import { DashboardLayout } from "@/components/ui/dashboard-layout";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { api } from "@/lib/api";
-import { useAuth, getAccessToken } from "@/lib/auth";
+import { useAuthGuard } from "@/hooks/useAuthGuard";
 import { Plus, Loader2, AlertTriangle } from "lucide-react";
 
 interface TestSuite {
@@ -36,7 +36,7 @@ interface Baseline {
 
 export default function NewRunPage() {
   const router = useRouter();
-  const { isAuthenticated, isLoading } = useAuth();
+  const { ready, authenticated } = useAuthGuard();
   const [suites, setSuites] = useState<TestSuite[]>([]);
   const [agents, setAgents] = useState<TargetAgent[]>([]);
   const [baselines, setBaselines] = useState<Baseline[]>([]);
@@ -76,13 +76,9 @@ export default function NewRunPage() {
   };
 
   useEffect(() => {
-    const token = getAccessToken();
-    if (!token) {
-      router.replace("/login");
-    } else {
-      fetchData();
-    }
-  }, [router]);
+    if (!ready || !authenticated) return;
+    void fetchData();
+  }, [ready, authenticated]);
 
   useEffect(() => {
     if (formData.suite_id) {
@@ -122,7 +118,7 @@ export default function NewRunPage() {
     setFormData((prev) => ({ ...prev, [field]: value }));
   };
 
-  if (isLoading && !getAccessToken()) {
+  if (!ready || !authenticated) {
     return (
       <DashboardLayout>
         <div className="flex h-[calc(100vh-4rem)] items-center justify-center">

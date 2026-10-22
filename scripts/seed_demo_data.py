@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """Seed development data for the Agent Red-Teaming Framework."""
 
 from dotenv import load_dotenv

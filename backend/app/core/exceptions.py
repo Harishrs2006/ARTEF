@@ -86,6 +86,31 @@ class LLMError(RedTeamException):
         super().__init__(message, "LLM_ERROR", details, status.HTTP_502_BAD_GATEWAY)
 
 
+class LLMProviderError(LLMError):
+    """Raised when an LLM provider call fails.
+
+    Lives here so that the provider layer and its callers share one
+    exception type. The provider module re-exports it for convenience.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        provider: str = "",
+        model: str = "",
+        status_code: int = status.HTTP_502_BAD_GATEWAY,
+    ):
+        RedTeamException.__init__(
+            self,
+            message,
+            "LLM_PROVIDER_ERROR",
+            {"provider": provider, "model": model},
+            status_code,
+        )
+        self.provider = provider
+        self.model = model
+
+
 class LLMTimeoutError(LLMError):
     def __init__(self, provider: str, model: str, timeout: int):
         super().__init__(

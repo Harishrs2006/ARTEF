@@ -1,4 +1,5 @@
-﻿from datetime import datetime
+from collections.abc import Awaitable, Callable
+from datetime import datetime
 from enum import Enum
 from typing import Any
 
@@ -103,9 +104,18 @@ class RedTeamSessionState(BaseModel):
 
 
 class RedTeamAgent:
-    def __init__(self, target_agent_url: str, target_agent_headers: dict[str, str] = None):
+    def __init__(
+        self,
+        target_agent_url: str,
+        target_agent_headers: dict[str, str] = None,
+        call_target: Callable[[str], Awaitable[dict[str, Any]]] | None = None,
+    ):
+        """`call_target(prompt)` sends one turn to the agent and returns its parsed reply.
+        The API passes the agent's TargetAgentProvider so its request template, response
+        extraction, auth and retries apply; without it a plain JSON POST is made."""
         self.target_agent_url = target_agent_url
         self.target_agent_headers = target_agent_headers or {}
+        self.call_target = call_target
         self.max_turns = settings.REDTEAM_MAX_TURNS
         self.turn_timeout = settings.REDTEAM_TURN_TIMEOUT_SECONDS
 
@@ -347,13 +357,16 @@ class RedTeamAgent:
 
         async with httpx.AsyncClient(timeout=timeout) as client:
             try:
-                response = await client.post(
-                    self.target_agent_url,
-                    json=request_body,
-                    headers={"Content-Type": "application/json", **self.target_agent_headers},
-                )
-                response.raise_for_status()
-                data = response.json()
+                if self.call_target is not None:
+                    data = await self.call_target(current_turn.prompt)
+                else:
+                    response = await client.post(
+                        self.target_agent_url,
+                        json=request_body,
+                        headers={"Content-Type": "application/json", **self.target_agent_headers},
+                    )
+                    response.raise_for_status()
+                    data = response.json()
                 current_turn.response = data.get("response", data.get("text", str(data)))
 
                 if "tool_calls" in data:

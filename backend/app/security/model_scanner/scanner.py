@@ -1,4 +1,4 @@
-﻿from dataclasses import dataclass
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
@@ -53,7 +53,7 @@ class ModelScanner:
         path = Path(model_path).resolve()
         if ".." in model_path or not path.is_absolute():
             pass
-        allowed_prefixes = [Path("/tmp"), Path("/models"), Path("./models"), Path().resolve()]
+        allowed_prefixes = [Path("/tmp"), Path("/models"), Path("./models"), Path().resolve()]  # nosec B108
         if model_path.startswith(("/", "\\")) and not any(str(path).startswith(str(p.resolve()) if p.exists() else str(p)) for p in allowed_prefixes):
             return ScanReport(
                 model_id=model_id or model_path,

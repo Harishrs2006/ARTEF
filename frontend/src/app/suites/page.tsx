@@ -1,7 +1,7 @@
-﻿"use client";
+"use client";
 
-import { useEffect, useState, useCallback } from "react";
-import { useRouter } from "next/navigation";
+import { useEffect, useState, useCallback, useMemo } from "react";
+
 import { DashboardLayout } from "@/components/ui/dashboard-layout";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -12,11 +12,11 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { api } from "@/lib/api";
-import { formatDate, getSeverityColor } from "@/lib/utils";
-import { useAuth, getAccessToken } from "@/lib/auth";
-import { Plus, Upload, Search, FileText, Eye, Edit, Trash2, Download, AlertTriangle, RefreshCw } from "lucide-react";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue, SELECT_ALL_VALUE } from "@/components/ui/select";
+import { api, handleApiError } from "@/lib/api";
+import { getSeverityColor } from "@/lib/utils";
+import { useAuthGuard } from "@/hooks/useAuthGuard";
+import { Plus, Upload, Search, FileText, Eye, Trash2, AlertTriangle, RefreshCw } from "lucide-react";
 
 interface TestCase {
   id: string;
@@ -42,12 +42,11 @@ interface TestSuite {
 }
 
 export default function SuitesPage() {
-  const router = useRouter();
-  const { isAuthenticated, isLoading } = useAuth();
+  const { ready, authenticated } = useAuthGuard();
   const [suites, setSuites] = useState<TestSuite[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
-  const [selectedCategory, setSelectedCategory] = useState("");
+  const [selectedCategory, setSelectedCategory] = useState(SELECT_ALL_VALUE);
   const [showCreateDialog, setShowCreateDialog] = useState(false);
   const [showImportDialog, setShowImportDialog] = useState(false);
   const [importFormat, setImportFormat] = useState<"yaml" | "json">("yaml");
@@ -78,27 +77,19 @@ export default function SuitesPage() {
   }, []);
 
   useEffect(() => {
-    const token = getAccessToken();
-    if (token) {
-      fetchSuites();
-      return;
-    }
-    if (!isLoading && !isAuthenticated) {
-      router.replace("/login");
-    } else if (!isLoading && isAuthenticated) {
-      fetchSuites();
-    }
-  }, [isAuthenticated, isLoading, fetchSuites, router]);
+    if (!ready || !authenticated) return;
+    void fetchSuites();
+  }, [ready, authenticated, fetchSuites]);
 
   useEffect(() => {
-    if (!isAuthenticated || loading) return;
-    
+    if (!authenticated || loading) return;
+
     const interval = setInterval(() => {
       fetchSuites(true);
     }, 30000);
-    
+
     return () => clearInterval(interval);
-  }, [isAuthenticated, loading, fetchSuites]);
+  }, [authenticated, loading, fetchSuites]);
 
   const handleCreateSuite = async () => {
     if (!newSuiteName.trim()) return;
@@ -119,39 +110,55 @@ export default function SuitesPage() {
 
   const handleImport = async () => {
     if (!importContent.trim()) return;
+    setError(null);
     try {
-      const endpoint = importFormat === "yaml" ? "/suites/import/yaml" : "/suites/import/json";
-      await api.post(endpoint, importContent, {
-        headers: { "Content-Type": importFormat === "yaml" ? "text/yaml" : "application/json" },
+      // The backend import endpoint takes the suite definition as text.
+      await api.post("/suites/import", {
+        content: importContent,
+        format: importFormat,
       });
       setShowImportDialog(false);
       setImportContent("");
-      fetchSuites();
-    } catch (error) {
-      console.error("Failed to import suite:", error);
+      await fetchSuites();
+    } catch (err) {
+      setError(handleApiError(err));
     }
   };
 
   const handleDeleteSuite = async (suiteId: string) => {
     if (!confirm("Are you sure you want to delete this suite?")) return;
+    setError(null);
     try {
       await api.delete(`/suites/${suiteId}`);
-      fetchSuites();
-    } catch (error) {
-      console.error("Failed to delete suite:", error);
+      await fetchSuites();
+    } catch (err) {
+      setError(handleApiError(err));
     }
   };
 
-  const filteredSuites = suites.filter((suite) => {
-    const matchesSearch = suite.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      suite.description?.toLowerCase().includes(searchQuery.toLowerCase());
-    const matchesCategory = !selectedCategory || suite.test_cases.some(tc => tc.category === selectedCategory);
-    return matchesSearch && matchesCategory;
-  });
+  // The filtered list and the category set were rebuilt on every render.
+  // The category set in particular walks every test case of every suite, so
+  // it was O(suites x test cases) on each keystroke of the search box.
+  const filteredSuites = useMemo(() => {
+    const query = searchQuery.toLowerCase();
+    return suites.filter((suite) => {
+      const matchesSearch =
+        suite.name.toLowerCase().includes(query) ||
+        suite.description?.toLowerCase().includes(query);
+      const matchesCategory =
+        !selectedCategory ||
+        selectedCategory === SELECT_ALL_VALUE ||
+        suite.test_cases.some((tc) => tc.category === selectedCategory);
+      return matchesSearch && matchesCategory;
+    });
+  }, [suites, searchQuery, selectedCategory]);
 
-  const categories = Array.from(new Set(suites.flatMap(s => s.test_cases.map(tc => tc.category))));
+  const categories = useMemo(
+    () => Array.from(new Set(suites.flatMap((s) => s.test_cases.map((tc) => tc.category)))),
+    [suites]
+  );
 
-  if (isLoading && !getAccessToken()) {
+  if (!ready || !authenticated) {
     return (
       <DashboardLayout>
         <div className="flex h-[calc(100vh-4rem)] items-center justify-center">
@@ -275,7 +282,7 @@ export default function SuitesPage() {
             <Select value={selectedCategory} onValueChange={setSelectedCategory}>
               <SelectTrigger className="w-48"><SelectValue placeholder="All categories" /></SelectTrigger>
               <SelectContent>
-                <SelectItem value="">All categories</SelectItem>
+                <SelectItem value={SELECT_ALL_VALUE}>All categories</SelectItem>
                 {categories.map((cat) => (
                   <SelectItem key={cat} value={cat}>{cat}</SelectItem>
                 ))}

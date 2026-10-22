@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
-import { useRouter } from "next/navigation";
+
 import { DashboardLayout } from "@/components/ui/dashboard-layout";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -10,8 +10,8 @@ import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { api } from "@/lib/api";
-import { useAuth, getAccessToken } from "@/lib/auth";
-import { Shield, ShieldAlert, ShieldCheck, Eye, Ban, Activity, Settings, AlertTriangle, Clock } from "lucide-react";
+import { useAuthGuard } from "@/hooks/useAuthGuard";
+import { Shield, ShieldAlert, ShieldCheck, Eye, Ban, Activity, AlertTriangle, Clock } from "lucide-react";
 
 interface Guardrail {
   id: string;
@@ -32,8 +32,7 @@ interface GuardrailFinding {
 }
 
 export default function GuardrailsPage() {
-  const router = useRouter();
-  const { isAuthenticated, isLoading } = useAuth();
+  const { ready, authenticated } = useAuthGuard();
   const [guardrails, setGuardrails] = useState<Guardrail[]>([]);
   const [findings, setFindings] = useState<GuardrailFinding[]>([]);
   const [stats, setStats] = useState({ total: 0, blocked: 0, monitoring: 0, critical: 0 });
@@ -72,11 +71,9 @@ export default function GuardrailsPage() {
   }, []);
 
   useEffect(() => {
-    const token = getAccessToken();
-    if (token) { fetchData(); return; }
-    if (!isLoading && !isAuthenticated) router.replace("/login");
-    else if (!isLoading && isAuthenticated) fetchData();
-  }, [isAuthenticated, isLoading, fetchData, router]);
+    if (!ready || !authenticated) return;
+    void fetchData();
+  }, [ready, authenticated, fetchData]);
 
   const handleTest = async () => {
     if (!testInput) return;
@@ -93,7 +90,7 @@ export default function GuardrailsPage() {
     } finally { setTesting(false); }
   };
 
-  if (isLoading && !getAccessToken()) {
+  if (!ready || !authenticated) {
     return <DashboardLayout><div className="flex h-[calc(100vh-4rem)] items-center justify-center"><div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div></div></DashboardLayout>;
   }
 
@@ -157,18 +154,12 @@ export default function GuardrailsPage() {
               <CardHeader><CardTitle>Guardrail Policies</CardTitle></CardHeader>
               <CardContent>
                 {loading ? <p>Loading...</p> : guardrails.length === 0 ? (
-                  <div className="space-y-2">
-                    {[
-                      { name: "Jailbreak Detection", type: "jailbreak", severity: "critical", status: "blocked" },
-                      { name: "Prompt Injection", type: "prompt_injection", severity: "critical", status: "blocked" },
-                      { name: "PII Extraction", type: "pii_extraction", severity: "high", status: "blocked" },
-                      { name: "Toxic Content", type: "toxic_content", severity: "medium", status: "monitoring" },
-                    ].map((g, i) => (
-                      <div key={i} className="flex items-center justify-between p-3 border rounded">
-                        <div><p className="font-medium">{g.name}</p><p className="text-xs text-muted-foreground">{g.type}</p></div>
-                        <div className="flex gap-2"><Badge variant={g.severity === "critical" ? "destructive" : "secondary"}>{g.severity}</Badge><Badge variant={g.status === "blocked" ? "destructive" : "outline"}>{g.status}</Badge></div>
-                      </div>
-                    ))}
+                  <div className="text-center py-8 text-muted-foreground">
+                    <ShieldCheck className="h-10 w-10 mx-auto mb-2 opacity-40" />
+                    <p className="font-medium">No guardrail policies configured</p>
+                    <p className="text-sm">
+                      Add a policy to start detecting prompt injection, PII leakage and other risks.
+                    </p>
                   </div>
                 ) : (
                   <div className="space-y-2">

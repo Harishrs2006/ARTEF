@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
-import { useRouter } from "next/navigation";
+
 import { DashboardLayout } from "@/components/ui/dashboard-layout";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -11,12 +11,11 @@ import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { api } from "@/lib/api";
-import { useAuth, getAccessToken } from "@/lib/auth";
-import { Shield, Server, Activity, AlertTriangle, CheckCircle, Clock, Zap, FileText, Loader2 } from "lucide-react";
+import { useAuthGuard } from "@/hooks/useAuthGuard";
+import { Shield, Server, Activity, Zap, FileText, Loader2 } from "lucide-react";
 
 export default function SecurityPage() {
-  const router = useRouter();
-  const { isAuthenticated, isLoading } = useAuth();
+  const { ready, authenticated } = useAuthGuard();
   const [scanResult, setScanResult] = useState<any>(null);
   const [scanning, setScanning] = useState(false);
   const [modelPath, setModelPath] = useState("./models");
@@ -35,11 +34,9 @@ export default function SecurityPage() {
   }, []);
 
   useEffect(() => {
-    const token = getAccessToken();
-    if (token) { fetchDashboard(); return; }
-    if (!isLoading && !isAuthenticated) router.replace("/login");
-    else if (!isLoading && isAuthenticated) fetchDashboard();
-  }, [isAuthenticated, isLoading, fetchDashboard, router]);
+    if (!ready || !authenticated) return;
+    void fetchDashboard();
+  }, [ready, authenticated, fetchDashboard]);
 
   const handleScan = async () => {
     setScanning(true);
@@ -62,7 +59,7 @@ export default function SecurityPage() {
     } finally { setBenchmarking(null); }
   };
 
-  if (isLoading && !getAccessToken()) return <DashboardLayout><div className="flex h-[calc(100vh-4rem)] items-center justify-center"><div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div></div></DashboardLayout>;
+  if (!ready || !authenticated) return <DashboardLayout><div className="flex h-[calc(100vh-4rem)] items-center justify-center"><div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div></div></DashboardLayout>;
 
   return (
     <DashboardLayout>

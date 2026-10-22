@@ -4,6 +4,7 @@ from uuid import UUID
 from sqlalchemy import func, select
 from sqlalchemy.orm import selectinload
 
+from app.domain.enums import DatasetStatus
 from app.models.dataset import Dataset, DatasetSplit, DatasetVersion
 from app.repositories.base import BaseRepository
 
@@ -13,7 +14,7 @@ if TYPE_CHECKING:
 
 class DatasetRepository(BaseRepository[Dataset]):
     def __init__(self, session: "AsyncSession"):
-        super().__init__(session, Dataset)
+        super().__init__(Dataset, session)
 
     async def get_with_versions(self, dataset_id: UUID) -> Dataset | None:
         stmt = (
@@ -25,12 +26,14 @@ class DatasetRepository(BaseRepository[Dataset]):
         return result.unique().scalar_one_or_none()
 
     async def get_active_by_name(self, name: str) -> Dataset | None:
-        stmt = select(Dataset).where(Dataset.name == name, Dataset.status == "active")
+        stmt = select(Dataset).where(
+            Dataset.name == name, Dataset.status == DatasetStatus.ACTIVE
+        )
         result = await self.session.execute(stmt)
-        return result.scalar_one_or_none()
+        return result.scalars().first()
 
     async def list_by_status(
-        self, status: str, skip: int = 0, limit: int = 100
+        self, status: DatasetStatus, skip: int = 0, limit: int = 100
     ) -> list[Dataset]:
         stmt = (
             select(Dataset)

@@ -5,14 +5,14 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
+
+
 import { Textarea } from "@/components/ui/textarea";
 import { api } from "@/lib/api";
 import { formatDate, getSeverityColor } from "@/lib/utils";
-import { useAuth, getAccessToken } from "@/lib/auth";
+import { useAuthGuard } from "@/hooks/useAuthGuard";
 import { useParams, useRouter } from "next/navigation";
-import { ArrowLeft, Edit, AlertTriangle, CheckCircle, XCircle, AlertCircle, Flag } from "lucide-react";
+import { ArrowLeft, AlertTriangle, CheckCircle, AlertCircle, Flag } from "lucide-react";
 
 interface ReviewItem {
   id: string;
@@ -26,7 +26,8 @@ interface ReviewItem {
   assigned_to: string | null;
   reviewed_by: string | null;
   reviewed_at: string | null;
-  notes: string | null;
+  /** The backend returns the reviewer's notes as `reviewer_notes`. */
+  reviewer_notes: string | null;
   created_at: string;
   updated_at: string;
   run?: {
@@ -48,7 +49,7 @@ export default function ReviewDetailPage() {
   const params = useParams();
   const reviewId = params.id as string;
   const router = useRouter();
-  const { isAuthenticated, isLoading } = useAuth();
+  const { ready, authenticated } = useAuthGuard();
   const [review, setReview] = useState<ReviewItem | null>(null);
   const [loading, setLoading] = useState(true);
   const [newLabel, setNewLabel] = useState("");
@@ -60,7 +61,7 @@ export default function ReviewDetailPage() {
       const res = await api.get(`/reviews/${reviewId}`);
       setReview(res.data);
       if (res.data.label) setNewLabel(res.data.label);
-      if (res.data.notes) setNewNotes(res.data.notes);
+      if (res.data.reviewer_notes) setNewNotes(res.data.reviewer_notes);
     } catch (error) {
       console.error("Failed to fetch review:", error);
     } finally {
@@ -69,11 +70,9 @@ export default function ReviewDetailPage() {
   }, [reviewId]);
 
   useEffect(() => {
-    const token = getAccessToken();
-    if (token) { fetchReview(); return; }
-    if (!isLoading && !isAuthenticated) router.replace("/login");
-    else if (!isLoading && isAuthenticated) fetchReview();
-  }, [isAuthenticated, isLoading, fetchReview, router]);
+    if (!ready || !authenticated) return;
+    void fetchReview();
+  }, [ready, authenticated, fetchReview]);
 
   const handleLabelReview = async (label: string) => {
     setSaving(true);
@@ -110,7 +109,7 @@ export default function ReviewDetailPage() {
     }
   };
 
-  if (isLoading && !getAccessToken()) {
+  if (!ready || !authenticated) {
     return (
       <div className="flex h-screen items-center justify-center">
         <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
@@ -217,7 +216,7 @@ export default function ReviewDetailPage() {
               <div>
                 <p className="text-sm text-muted-foreground">Notes</p>
                 <Textarea
-                  value={review.notes || ""}
+                  value={review.reviewer_notes || ""}
                   onChange={(e) => setNewNotes(e.target.value)}
                   placeholder="Add review notes..."
                   rows={3}

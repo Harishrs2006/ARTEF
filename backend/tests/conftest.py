@@ -61,7 +61,10 @@ def make_test_settings() -> Settings:
     """Build the default settings used across backend tests."""
     return Settings(
         SECRET_KEY='a' * 32,
-        DATABASE_URL='sqlite:///./test.db',
+        # The application only ever creates an async engine, so a sync
+        # SQLite URL made every test that touched the database fail with
+        # "The asyncio extension requires an async driver".
+        DATABASE_URL='sqlite+aiosqlite:///./test.db',
         REDIS_URL='redis://localhost:6379/0',
         CELERY_BROKER_URL='redis://localhost:6379/1',
         CELERY_RESULT_BACKEND='redis://localhost:6379/2',

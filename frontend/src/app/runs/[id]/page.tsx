@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
-import { useRouter } from "next/navigation";
+
 import { DashboardLayout } from "@/components/ui/dashboard-layout";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -9,7 +9,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
 import { api, handleApiError } from "@/lib/api";
 import { formatDate, formatDuration, formatCost, getSeverityColor } from "@/lib/utils";
-import { useAuth, getAccessToken } from "@/lib/auth";
+import { useAuthGuard } from "@/hooks/useAuthGuard";
 import { useParams } from "next/navigation";
 import { AlertTriangle, CheckCircle, XCircle, ArrowLeft } from "lucide-react";
 import Link from "next/link";
@@ -82,8 +82,7 @@ interface RegressionDetail {
 export default function RunDetailPage() {
   const params = useParams();
   const runId = params.id as string;
-  const router = useRouter();
-  const { isAuthenticated, isLoading } = useAuth();
+  const { ready, authenticated } = useAuthGuard();
   const [run, setRun] = useState<RunDetail | null>(null);
   const [results, setResults] = useState<ResultDetail[]>([]);
   const [regressions, setRegressions] = useState<RegressionDetail[]>([]);
@@ -138,13 +137,11 @@ export default function RunDetailPage() {
   }, [run, fetchData]);
 
   useEffect(() => {
-    const token = getAccessToken();
-    if (token) { fetchData(); return; }
-    if (!isLoading && !isAuthenticated) router.replace("/login");
-    else if (!isLoading && isAuthenticated) fetchData();
-  }, [isAuthenticated, isLoading, runId, fetchData, router]);
+    if (!ready || !authenticated) return;
+    void fetchData();
+  }, [ready, authenticated, fetchData]);
 
-  if ((isLoading && !getAccessToken()) || !loaded) {
+  if (!ready || !authenticated) {
     return (
       <DashboardLayout>
         <div className="flex h-[calc(100vh-4rem)] items-center justify-center">

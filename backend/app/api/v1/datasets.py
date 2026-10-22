@@ -27,7 +27,7 @@ MAX_UPLOAD_SIZE = 10 * 1024 * 1024  # 10MB
 ALLOWED_UPLOAD_TYPES = {"text/csv", "application/json", "application/octet-stream"}
 
 
-@router.post("/datasets", status_code=201)
+@router.post("/", status_code=201)
 async def create_dataset(
     name: str,
     description: str | None = None,
@@ -61,7 +61,7 @@ async def create_dataset(
     return {"id": str(dataset.id), "name": dataset.name, "status": dataset.status.value}
 
 
-@router.get("/datasets")
+@router.get("/")
 async def list_datasets(
     status: DatasetStatusEnum | None = None,
     skip: int = Query(0, ge=0),
@@ -73,7 +73,9 @@ async def list_datasets(
     dataset_repo = DatasetRepository(session)
     filters = {}
     if status:
-        filters["status"] = status.value
+        # The column stores the enum member name ("DRAFT"), not its value
+        # ("draft"), so the enum member must be passed through unchanged.
+        filters["status"] = status
     datasets = await dataset_repo.list(filters=filters, skip=skip, limit=limit)
     return [
         {
@@ -90,7 +92,7 @@ async def list_datasets(
     ]
 
 
-@router.get("/datasets/{dataset_id}")
+@router.get("/{dataset_id}")
 async def get_dataset(
     dataset_id: UUID,
     session: AsyncSession = Depends(get_db),
@@ -126,7 +128,7 @@ async def get_dataset(
     }
 
 
-@router.post("/datasets/{dataset_id}/versions")
+@router.post("/{dataset_id}/versions")
 async def create_dataset_version(
     dataset_id: UUID,
     changelog: str | None = None,
@@ -169,7 +171,7 @@ async def create_dataset_version(
     }
 
 
-@router.get("/datasets/{dataset_id}/versions")
+@router.get("/{dataset_id}/versions")
 async def list_dataset_versions(
     dataset_id: UUID,
     skip: int = Query(0, ge=0),
@@ -197,7 +199,7 @@ async def list_dataset_versions(
     ]
 
 
-@router.get("/datasets/{dataset_id}/versions/{version_id}")
+@router.get("/{dataset_id}/versions/{version_id}")
 async def get_dataset_version(
     dataset_id: UUID,
     version_id: UUID,
@@ -222,7 +224,7 @@ async def get_dataset_version(
     }
 
 
-@router.get("/datasets/{dataset_id}/versions/{version_id}/splits")
+@router.get("/{dataset_id}/versions/{version_id}/splits")
 async def list_dataset_splits(
     dataset_id: UUID,
     version_id: UUID,
@@ -243,7 +245,7 @@ async def list_dataset_splits(
     ]
 
 
-@router.get("/datasets/{dataset_id}/versions/{version_id}/splits/{split_name}")
+@router.get("/{dataset_id}/versions/{version_id}/splits/{split_name}")
 async def get_dataset_split(
     dataset_id: UUID,
     version_id: UUID,
@@ -267,7 +269,7 @@ async def get_dataset_split(
     }
 
 
-@router.post("/datasets/{dataset_id}/upload")
+@router.post("/{dataset_id}/upload")
 async def upload_dataset_file(
     dataset_id: UUID,
     file: UploadFile = File(...),
@@ -294,7 +296,7 @@ async def upload_dataset_file(
     return {"message": "File uploaded successfully", "dataset_id": str(dataset_id), "size_bytes": len(content)}
 
 
-@router.post("/datasets/{dataset_id}/split")
+@router.post("/{dataset_id}/split")
 async def split_dataset(
     dataset_id: UUID,
     version_id: UUID,
@@ -317,7 +319,7 @@ async def split_dataset(
     }
 
 
-@router.delete("/datasets/{dataset_id}")
+@router.delete("/{dataset_id}")
 async def delete_dataset(
     dataset_id: UUID,
     session: AsyncSession = Depends(get_db),

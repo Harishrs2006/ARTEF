@@ -9,6 +9,12 @@ from app.core.logging import get_logger
 settings = get_settings()
 logger = get_logger(__name__)
 
+# The maximum length of a client-reported error message. A client must not
+# be able to fill the process memory with an oversized report.
+MAX_CLIENT_ERROR_MESSAGE = 500
+MAX_CLIENT_ERROR_STACK = 2000
+MAX_CLIENT_ERROR_SOURCE = 200
+
 
 class SecurityMetrics:
     """Security monitoring metrics collector."""
@@ -16,6 +22,11 @@ class SecurityMetrics:
     def __init__(self):
         self._metrics: dict[str, dict[str, Any]] = {}
         self._alerts: list[dict[str, Any]] = []
+        # The start time is captured once, when the collector is created.
+        # Reading it lazily via `getattr(self, "_start_time", time.time())`
+        # returned a *fresh* `time.time()` on every call, so the reported
+        # uptime was always ~0 (and the UI rendered it as "-1m").
+        self._start_time = time.time()
 
     def record_guardrail_hit(self, guardrail_type: str, severity: str, blocked: bool):
         """Record a guardrail hit."""
@@ -87,7 +98,7 @@ class SecurityMetrics:
         return guardrail_stats
 
     def _get_uptime(self) -> float:
-        return time.time() - getattr(self, "_start_time", time.time())
+        return max(0.0, time.time() - self._start_time)
 
     def get_alerts(
         self, severity: str | None = None, limit: int = 50
@@ -96,6 +107,35 @@ class SecurityMetrics:
         if severity:
             alerts = [a for a in alerts if a["severity"] == severity]
         return alerts[-limit:]
+
+    def record_client_error(
+        self,
+        error_type: str,
+        message: str,
+        source: str | None = None,
+        stack: str | None = None,
+    ) -> dict[str, Any]:
+        """Record a client-side error reported by the browser.
+
+        The payload is truncated so that a client cannot flood the process
+        memory, and the message is redacted of anything that looks like a
+        credential before it is stored.
+        """
+        from app.security.pii_redaction import redact_text
+
+        alert = {
+            "id": str(uuid4()),
+            "type": "client_error",
+            "error_type": error_type[:64],
+            "message": redact_text((message or "")[:MAX_CLIENT_ERROR_MESSAGE]),
+            "source": (source or "")[:MAX_CLIENT_ERROR_SOURCE],
+            "stack": redact_text(stack[:MAX_CLIENT_ERROR_STACK]) if stack else None,
+            "severity": "medium",
+            "timestamp": datetime.now().isoformat(),
+        }
+        self._alerts.append(alert)
+        logger.warning("client_error", error_type=alert["error_type"], source=alert["source"])
+        return alert
 
 
 security_metrics = SecurityMetrics()

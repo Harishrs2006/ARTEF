@@ -28,7 +28,9 @@ class ReviewQueue(Base):
     id: Mapped[String] = mapped_column(UUIDString(), primary_key=True, default=lambda: str(uuid4()))
     regression_id: Mapped[String] = mapped_column(
         UUIDString(),
-        ForeignKey("regressions.id", ondelete="CASCADE"),
+        # RESTRICT: deleting a regression must not silently destroy the
+        # review-queue entry and its labels.
+        ForeignKey("regressions.id", ondelete="RESTRICT"),
         nullable=False,
         index=True,
     )
@@ -95,8 +97,10 @@ class ReviewLabelRecord(Base):
         SQLEnum(ReviewLabel, native_enum=False, create_constraint=True),
         nullable=False,
     )
+    # RESTRICT instead of CASCADE: deleting a user must not erase the
+    # audit trail of which findings were labelled by whom.
     reviewer_id: Mapped[String] = mapped_column(
-        UUIDString(), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+        UUIDString(), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False
     )
     rationale: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(

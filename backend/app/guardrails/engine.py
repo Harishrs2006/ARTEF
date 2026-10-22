@@ -32,11 +32,17 @@ class GuardrailEngine:
     def _load_default_patterns(self):
         """Load default attack patterns for each guardrail type."""
         self._patterns[GuardrailType.JAILBREAK] = [
-            re.compile(r"(ignore|disregard|override)\s+(your|the)\s+(instructions|rules|guidelines)", re.IGNORECASE),
-            re.compile(r"(act\s+as|pretend\s+to\s+be|roleplay)\s+(a\s+)?(malicious|harmful|dangerous|evil|bad)", re.IGNORECASE),
+            re.compile(r"(ignore|disregard|override|forget)\s+(all\s+)?(your|the|any|previous|prior|earlier)?\s*(instructions|rules|guidelines|prompts?|directives?|restrictions?)", re.IGNORECASE),
+            re.compile(r"(act\s+as|pretend\s+to\s+be|roleplay)\s+(an?\s+)?(malicious|harmful|dangerous|evil|bad|unrestricted|unfiltered|uncensored|jailbroken)", re.IGNORECASE),
+            # Persona jailbreaks: the target of "pretend to be" is an
+            # arbitrary name, so the pattern is anchored on the known
+            # jailbreak personas instead of a fixed adjective list.
+            re.compile(r"\b(DAN|do\s+anything\s+now|STAN|developer\s+mode\s+enabled|AIM|evil\s+confidant)\b", re.IGNORECASE),
             re.compile(r"(developer\s+mode|jailbreak|system\s+prompt|override\s+system)", re.IGNORECASE),
             re.compile(r"(do\s+not\s+(follow|obey|heed)|forget\s+(your|the)\s+rules)", re.IGNORECASE),
             re.compile(r"(start\s+over|begin\s+new|fresh\s+start|ignore\s+previous)", re.IGNORECASE),
+            re.compile(r"(you\s+are\s+no\s+longer|there\s+are\s+no\s+(rules|restrictions|guidelines))", re.IGNORECASE),
+            re.compile(r"(without\s+(any\s+)?(restrictions|filters|limitations|censorship|ethical\s+guidelines))", re.IGNORECASE),
         ]
 
         self._patterns[GuardrailType.PROMPT_INJECTION] = [

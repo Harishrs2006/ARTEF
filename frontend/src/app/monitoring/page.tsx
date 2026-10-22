@@ -1,18 +1,17 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
-import { useRouter } from "next/navigation";
+
 import { DashboardLayout } from "@/components/ui/dashboard-layout";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { api } from "@/lib/api";
-import { useAuth, getAccessToken } from "@/lib/auth";
-import { Activity, Shield, AlertTriangle, CheckCircle, Clock, Eye, DollarSign, TrendingUp } from "lucide-react";
+import { useAuthGuard } from "@/hooks/useAuthGuard";
+import { Activity, Shield, AlertTriangle, CheckCircle, Clock, TrendingUp } from "lucide-react";
 
 export default function MonitoringPage() {
-  const router = useRouter();
-  const { isAuthenticated, isLoading } = useAuth();
+  const { ready, authenticated } = useAuthGuard();
   const [dashboard, setDashboard] = useState<any>(null);
   const [alerts, setAlerts] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -36,13 +35,11 @@ export default function MonitoringPage() {
   }, []);
 
   useEffect(() => {
-    const token = getAccessToken();
-    if (token) { fetchData(); return; }
-    if (!isLoading && !isAuthenticated) router.replace("/login");
-    else if (!isLoading && isAuthenticated) fetchData();
-  }, [isAuthenticated, isLoading, fetchData, router]);
+    if (!ready || !authenticated) return;
+    void fetchData();
+  }, [ready, authenticated, fetchData]);
 
-  if (isLoading && !getAccessToken()) return <DashboardLayout><div className="flex h-[calc(100vh-4rem)] items-center justify-center"><div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div></div></DashboardLayout>;
+  if (!ready || !authenticated) return <DashboardLayout><div className="flex h-[calc(100vh-4rem)] items-center justify-center"><div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div></div></DashboardLayout>;
 
   return (
     <DashboardLayout>

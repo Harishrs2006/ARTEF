@@ -1,6 +1,6 @@
-﻿from uuid import UUID
+from uuid import UUID
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 
 from app.api.deps import (
@@ -31,6 +31,12 @@ class ReportResponse(BaseModel):
     content: dict | None = None
 
 
+class ReportGenerateRequest(BaseModel):
+    run_id: UUID
+    format: str = "markdown"
+    type: str = "full"
+
+
 class RunReport(BaseModel):
     run_id: UUID
     timestamp: str
@@ -54,8 +60,8 @@ class RunReport(BaseModel):
 @router.get("", response_model=list[ReportResponse], include_in_schema=False)
 @router.get("/", response_model=list[ReportResponse])
 async def list_reports(
-    skip: int = 0,
-    limit: int = 100,
+    skip: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=1000),
     run_repo: RunRepository = Depends(get_run_repo),
     current_user: TokenData = Depends(
         require_role(["admin", "safety_engineer", "ml_engineer", "qa_engineer", "viewer"])
@@ -87,6 +93,98 @@ async def list_reports(
         ))
 
     return reports
+
+
+@router.post("", response_model=ReportResponse, status_code=201)
+@router.post("/", response_model=ReportResponse, status_code=201)
+async def generate_report(
+    request: ReportGenerateRequest,
+    run_repo: RunRepository = Depends(get_run_repo),
+    result_repo: ResultRepository = Depends(get_result_repo),
+    regression_repo: RegressionRepository = Depends(get_regression_repo),
+    review_repo: ReviewQueueRepository = Depends(get_review_repo),
+    current_user: TokenData = Depends(
+        require_role(["admin", "safety_engineer", "ml_engineer", "qa_engineer", "viewer"])
+    ),
+):
+    """Generate a report for a completed run.
+
+    The report is rendered from the persisted run, result and regression
+    records; nothing is invented.
+    """
+    run = await run_repo.get(request.run_id)
+    if not run:
+        raise NotFoundError("Run", str(request.run_id))
+
+    report = await get_run_report(
+        request.run_id, run_repo, result_repo, regression_repo, review_repo, current_user
+    )
+
+    generated_at = run.completed_at or run.created_at
+    content: dict = {
+        "summary": report.model_dump(mode="json"),
+    }
+
+    if request.format == "markdown":
+        content["markdown"] = _render_markdown(report)
+    elif request.format == "json":
+        content["json"] = report.model_dump(mode="json")
+    elif request.format == "html":
+        content["html"] = _render_html(report)
+
+    return ReportResponse(
+        id=run.id,
+        run_id=run.id,
+        type=request.type,
+        status="completed",
+        format=request.format,
+        generated_at=generated_at.isoformat() if hasattr(generated_at, "isoformat") else str(generated_at),
+        generated_by=str(run.created_by) if run.created_by else None,
+        content=content,
+    )
+
+
+def _render_markdown(report: RunReport) -> str:
+    return f"""# Run Report: {report.run_id}
+
+**Timestamp:** {report.timestamp}
+**Suite Version:** {report.suite_version}
+**Baseline:** {report.baseline_version or "N/A"}
+**Framework Version:** {report.framework_version}
+
+- **Total Tests:** {report.total_tests}
+- **Passed:** {report.passed}
+- **Failed:** {report.failed}
+- **Inconclusive:** {report.inconclusive}
+- **Regressions:** {report.regressions}
+- **Gate Decision:** {report.gate_decision}
+- **Total Cost:** ${report.total_cost_usd:.4f}
+- **Total Latency:** {report.total_latency_ms}ms
+
+- **Critical:** {report.severity_breakdown["critical"]}
+- **High:** {report.severity_breakdown["high"]}
+- **Medium:** {report.severity_breakdown["medium"]}
+- **Low:** {report.severity_breakdown["low"]}
+"""
+
+
+def _render_html(report: RunReport) -> str:
+    from html import escape
+
+    rows = "".join(
+        f"<tr><td>{escape(name)}</td><td>{count}</td></tr>"
+        for name, count in report.severity_breakdown.items()
+    )
+    return f"""<html><head><meta charset="utf-8"><title>Run Report</title></head>
+<body>
+<h1>Run Report: {escape(str(report.run_id))}</h1>
+<p>Timestamp: {escape(report.timestamp)}</p>
+<p>Gate Decision: {escape(report.gate_decision)}</p>
+<p>Total Tests: {report.total_tests} (passed {report.passed}, failed {report.failed}, inconclusive {report.inconclusive})</p>
+<p>Regressions: {report.regressions}</p>
+<p>Total Cost: ${report.total_cost_usd:.4f}</p>
+<table><thead><tr><th>Severity</th><th>Count</th></tr></thead><tbody>{rows}</tbody></table>
+</body></html>"""
 
 
 @router.get("/run/{run_id}", response_model=RunReport)
@@ -146,11 +244,14 @@ async def get_run_report_markdown(
     run_repo: RunRepository = Depends(get_run_repo),
     result_repo: ResultRepository = Depends(get_result_repo),
     regression_repo: RegressionRepository = Depends(get_regression_repo),
+    review_repo: ReviewQueueRepository = Depends(get_review_repo),
     current_user: TokenData = Depends(
         require_role(["admin", "safety_engineer", "ml_engineer", "qa_engineer", "viewer"])
     ),
 ):
-    report = await get_run_report(run_id, run_repo, result_repo, regression_repo, current_user)
+    report = await get_run_report(
+        run_id, run_repo, result_repo, regression_repo, review_repo, current_user
+    )
 
     md = f"""# Run Report: {report.run_id}
 

@@ -1,4 +1,4 @@
-﻿import json
+import json
 from datetime import datetime
 from typing import Any
 from uuid import UUID
@@ -42,6 +42,8 @@ class ScoringService:
         self.execution_repo = execution_repo
         self.result_repo = result_repo
         self.case_repo = case_repo
+        # The cost tracker joins the caller's transaction so that a rolled
+        # back run does not leave committed cost rows behind.
         self.cost_tracker = CostTracker(execution_repo.session)
 
         self.matchers = {
@@ -50,8 +52,17 @@ class ScoringService:
             ExpectedBehaviorType.KEYWORD_MATCH: KeywordMatcher(),
             ExpectedBehaviorType.REFUSAL: RefusalMatcher(),
         }
-        self.judge = LLMJudge()
+        # The judge is created lazily: constructing it validates the provider
+        # credentials, and a service that only uses deterministic matchers
+        # must not fail because the judge is not configured.
+        self._judge: LLMJudge | None = None
         self.fallback_judge = FallbackJudge()
+
+    @property
+    def judge(self) -> LLMJudge:
+        if self._judge is None:
+            self._judge = LLMJudge()
+        return self._judge
 
     async def score_run(self, run_id: UUID) -> Run:
         run_repo = RunRepository(self.execution_repo.session)
@@ -62,10 +73,18 @@ class ScoringService:
         run.status = RunStatus.SCORING
         await self.execution_repo.session.flush()
 
-        executions = await self.execution_repo.list_by_run(run_id)
+        executions = await self.execution_repo.list_all_by_run(run_id)
+
+        # The test cases are fetched in one query instead of one query per
+        # execution. For a suite of several hundred tests the per-execution
+        # lookup was the dominant cost of the scoring step.
+        test_cases = await self.case_repo.list_by_ids(
+            {e.test_case_id for e in executions}
+        )
+        test_case_by_id = {str(tc.id): tc for tc in test_cases}
 
         for execution in executions:
-            test_case = await self.case_repo.get(execution.test_case_id)
+            test_case = test_case_by_id.get(str(execution.test_case_id))
             if not test_case:
                 continue
 
@@ -83,12 +102,15 @@ class ScoringService:
                     scoring_result = self._inconclusive(test_case, f"Scoring error: {e}")
 
             if scoring_result.tokens_used > 0:
+                judge_metadata = (
+                    scoring_result.judge_output.metadata if scoring_result.judge_output else {}
+                )
                 await self.cost_tracker.track_cost(
-                    category=CostCategory.LLM_INFERENCE,
-                    provider=scoring_result.judge_output.metadata.get("provider", "unknown") if scoring_result.judge_output else "unknown",
-                    model=scoring_result.judge_output.metadata.get("model", "unknown") if scoring_result.judge_output else "unknown",
-                    input_tokens=scoring_result.judge_output.metadata.get("input_tokens", 0) if scoring_result.judge_output else 0,
-                    output_tokens=scoring_result.judge_output.metadata.get("output_tokens", 0) if scoring_result.judge_output else 0,
+                    category=CostCategory.JUDGE,
+                    provider=judge_metadata.get("provider", "unknown"),
+                    model=judge_metadata.get("model", "unknown"),
+                    input_tokens=judge_metadata.get("input_tokens", 0),
+                    output_tokens=judge_metadata.get("output_tokens", 0),
                     run_id=run.id,
                     test_case_id=test_case.id,
                     metadata={"execution_id": str(execution.id), "matcher": scoring_result.matcher_used.value if scoring_result.matcher_used else "unknown"},
@@ -187,9 +209,27 @@ class ScoringService:
 
         matcher = None
         if test_case.matcher_config:
-            # matcher_config is stored as a JSON dict (see suite_service._case_columns)
+            # ``matcher_config`` is a JSON column, so it is deserialised as a
+            # plain dict. Reading it with ``getattr`` silently produced
+            # ``None`` for every field, which disabled the pattern/keyword
+            # matchers entirely.
+            mc = test_case.matcher_config
+            if not isinstance(mc, dict):
+                mc = getattr(mc, "model_dump", dict)()
+            matcher_type = mc.get("type") or test_case.expected_behavior_type
+            if isinstance(matcher_type, str):
+                try:
+                    matcher_type = ExpectedBehaviorType(matcher_type)
+                except ValueError:
+                    matcher_type = test_case.expected_behavior_type
             matcher = MatcherConfig(
-                **{"type": test_case.expected_behavior_type, **test_case.matcher_config}
+                type=matcher_type,
+                pattern=mc.get("pattern"),
+                keywords=mc.get("keywords"),
+                case_sensitive=bool(mc.get("case_sensitive", False)),
+                regex_timeout_ms=int(mc.get("regex_timeout_ms", 1000) or 1000),
+                expected_keys=mc.get("expected_keys"),
+                required_fields=mc.get("required_fields"),
             )
         return ExpectedBehavior(
             type=test_case.expected_behavior_type,
@@ -275,15 +315,28 @@ class ScoringService:
         judge_agreement = True
 
         if settings.JUDGE_DOUBLE_SCORE:
-            second_judge_output = await self.fallback_judge.judge(
-                test_case.input,
-                response_text,
-                expected.rubric,
-            )
-            if self._validate_judge_output(second_judge_output):
-                judge_agreement = judge_output.verdict == second_judge_output.verdict
-            else:
+            # The secondary judge is a *fallback*: when it is unreachable or
+            # not configured it must not fail the whole scoring run. The
+            # primary verdict stands and the disagreement check is skipped.
+            try:
+                second_judge_output = await self.fallback_judge.judge(
+                    test_case.input,
+                    response_text,
+                    expected.rubric,
+                )
+            except Exception as e:
+                logger.warning(
+                    "fallback_judge_unavailable",
+                    error=str(e),
+                    provider=settings.SECONDARY_JUDGE_PROVIDER,
+                )
                 second_judge_output = None
+
+            if second_judge_output is not None:
+                if self._validate_judge_output(second_judge_output):
+                    judge_agreement = judge_output.verdict == second_judge_output.verdict
+                else:
+                    second_judge_output = None
 
         elapsed = datetime.utcnow() - start_time
 

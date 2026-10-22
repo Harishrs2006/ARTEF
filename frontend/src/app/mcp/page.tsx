@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useState } from "react";
+
 import { DashboardLayout } from "@/components/ui/dashboard-layout";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -9,23 +9,17 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { api } from "@/lib/api";
-import { useAuth, getAccessToken } from "@/lib/auth";
-import { Network, Send, Shield, Zap, Copy, CheckCircle, Loader2, AlertTriangle } from "lucide-react";
+import { useAuthGuard } from "@/hooks/useAuthGuard";
+import { Network, Send, CheckCircle, Loader2, AlertTriangle } from "lucide-react";
 import { getApiBaseUrl } from "@/lib/api";
 
 export default function MCPPage() {
-  const router = useRouter();
-  const { isAuthenticated, isLoading } = useAuth();
+  const { ready, authenticated } = useAuthGuard();
   const [messages, setMessages] = useState("Hello, how are you?");
   const [model, setModel] = useState("gpt-4o");
   const [response, setResponse] = useState<any>(null);
   const [loading, setLoading] = useState(false);
   const [guardrailEnabled, setGuardrailEnabled] = useState(true);
-
-  useEffect(() => {
-    const token = getAccessToken();
-    if (!token && !isLoading && !isAuthenticated) router.replace("/login");
-  }, [isAuthenticated, isLoading, router]);
 
   const handleSend = async () => {
     setLoading(true);
@@ -41,7 +35,7 @@ export default function MCPPage() {
     } finally { setLoading(false); }
   };
 
-  if (isLoading && !getAccessToken()) return <DashboardLayout><div className="flex h-[calc(100vh-4rem)] items-center justify-center"><div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div></div></DashboardLayout>;
+  if (!ready || !authenticated) return <DashboardLayout><div className="flex h-[calc(100vh-4rem)] items-center justify-center"><div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div></div></DashboardLayout>;
 
   const proxyUrl = `${getApiBaseUrl()}/mcp/proxy`;
 

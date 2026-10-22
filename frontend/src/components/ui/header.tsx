@@ -2,6 +2,7 @@
 
 import * as React from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useAuth } from "@/lib/auth";
 import { Button } from "@/components/ui/button";
 import {
@@ -12,19 +13,30 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import { cn } from "@/lib/utils";
+import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Sun, Moon, Monitor, LogOut, User, Settings, Bell, Menu } from "lucide-react";
 import { useTheme } from "next-themes";
 
 export const Header: React.FC = () => {
   const [mounted, setMounted] = React.useState(false);
   const { user, isAuthenticated, logout } = useAuth();
-  const { theme, setTheme } = useTheme();
+  const { setTheme } = useTheme();
+  const router = useRouter();
 
   React.useEffect(() => {
     setMounted(true);
   }, []);
+
+  /**
+   * Log out and leave the protected area.
+   *
+   * Clearing the token alone left the user on a dashboard whose every
+   * request returned 401, so the navigation is part of the operation.
+   */
+  const handleLogout = () => {
+    logout();
+    router.replace("/login");
+  };
 
   return (
     <header className="sticky top-0 z-30 h-16 border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
@@ -34,8 +46,8 @@ export const Header: React.FC = () => {
             variant="ghost"
             size="icon"
             className="lg:hidden"
-            onClick={() => document.dispatchEvent(new CustomEvent("toggle-sidebar"))}
-            aria-label="Toggle menu"
+            onClick={() => document.dispatchEvent(new CustomEvent("open-mobile-sidebar"))}
+            aria-label="Open navigation menu"
           >
             <Menu className="h-5 w-5" />
           </Button>
@@ -87,7 +99,9 @@ export const Header: React.FC = () => {
               <DropdownMenuTrigger asChild>
                 <Button variant="ghost" className="relative h-9 w-9 rounded-full">
                   <Avatar className="h-9 w-9">
-                    <AvatarImage src={user.email ? `https://api.dicebear.com/7.x/avataaars/svg?seed=${user.email}` : undefined} alt={user.username} />
+                    {/* The avatar is rendered locally from the username. Sending
+                        the user's email address to a third-party avatar service
+                        would leak PII to an external host. */}
                     <AvatarFallback>{user.username.charAt(0).toUpperCase()}</AvatarFallback>
                   </Avatar>
                 </Button>
@@ -107,7 +121,7 @@ export const Header: React.FC = () => {
                   <Link href="/settings"><Settings className="mr-2 h-4 w-4" />Settings</Link>
                 </DropdownMenuItem>
                 <DropdownMenuSeparator />
-                <DropdownMenuItem className="text-destructive focus:text-destructive-foreground" onClick={logout}>
+                <DropdownMenuItem className="text-destructive focus:text-destructive-foreground" onClick={handleLogout}>
                   <LogOut className="mr-2 h-4 w-4" />
                   Log out
                 </DropdownMenuItem>

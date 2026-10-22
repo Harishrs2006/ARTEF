@@ -1,4 +1,4 @@
-﻿import pytest
+import pytest
 from unittest.mock import patch, MagicMock
 
 from app.core.rate_limit import RateLimiter, settings

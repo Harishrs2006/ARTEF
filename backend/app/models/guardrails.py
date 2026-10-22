@@ -65,7 +65,9 @@ class GuardrailFinding(Base):
     __tablename__ = "guardrail_findings"
 
     id: Mapped[String] = mapped_column(UUIDString(), primary_key=True, default=lambda: str(uuid4()))
-    guardrail_id: Mapped[String] = mapped_column(UUIDString(), ForeignKey("guardrails.id"), nullable=False)
+    guardrail_id: Mapped[str] = mapped_column(
+        UUIDString(), ForeignKey("guardrails.id", ondelete="CASCADE"), nullable=False, index=True
+    )
     test_case_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     input_text: Mapped[str] = mapped_column(Text, nullable=False)
     output_text: Mapped[str | None] = mapped_column(Text, nullable=True)

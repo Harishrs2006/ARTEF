@@ -56,7 +56,8 @@ async def readiness_check(db: AsyncSession = Depends(get_db)):
 
     # Evaluations need the database and the task queue; vector store and object storage
     # are optional (not used by the evaluation pipeline) and only reported.
-    required = ("database", "redis")
+    # With CELERY_TASK_ALWAYS_EAGER the API runs evaluations itself and Redis is not used.
+    required = ("database",) if settings.CELERY_TASK_ALWAYS_EAGER else ("database", "redis")
     all_ready = all(checks[name] for name in required)
     return {"ready": all_ready, "required": list(required), "checks": checks}
 

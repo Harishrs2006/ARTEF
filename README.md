@@ -343,6 +343,9 @@ python demo/target_agent.py --mode vulnerable --port 9002
 # Frontend (from frontend/)
 pnpm install && pnpm dev           # http://localhost:3000
 ```
+On Windows, `powershell -ExecutionPolicy Bypass -File scripts\start_dev.ps1` starts all four
+in their own windows, with evaluations running inside the API (no Redis needed). It skips any
+service whose port is already in use.
 
 **④ Run evaluations.** Choose one way to execute runs:
 

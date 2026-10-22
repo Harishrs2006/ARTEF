@@ -40,7 +40,9 @@ class RunCreate(BaseModel):
 class RunResponse(BaseModel):
     id: UUID
     target_agent_id: UUID
+    target_agent_name: str | None = None
     suite_id: UUID
+    suite_name: str | None = None
     suite_version: int | None = 1
     baseline_id: UUID | None = None
     status: RunStatus

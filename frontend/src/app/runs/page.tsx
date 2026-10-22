@@ -16,7 +16,10 @@ import { Plus, Filter, Download, RefreshCw, AlertTriangle } from "lucide-react";
 interface RunSummary {
   id: string;
   target_agent_id: string;
+  target_agent_name: string | null;
   suite_id: string;
+  suite_name: string | null;
+  gate_decision: "PASS" | "WARN" | "FAIL" | "BLOCK" | null;
   suite_version: number;
   status: string;
   total_tests: number;
@@ -32,6 +35,13 @@ interface RunSummary {
   total_latency_ms: number;
   created_at: string;
 }
+
+const GATE_BADGE: Record<string, string> = {
+  PASS: "bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-300",
+  WARN: "bg-yellow-100 text-yellow-800 dark:bg-yellow-900/40 dark:text-yellow-300",
+  FAIL: "bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-300",
+  BLOCK: "bg-red-200 text-red-900 dark:bg-red-900/60 dark:text-red-200",
+};
 
 export default function RunsPage() {
   const router = useRouter();
@@ -180,6 +190,7 @@ export default function RunsPage() {
                         <TableHead>Agent</TableHead>
                         <TableHead>Suite</TableHead>
                         <TableHead>Status</TableHead>
+                        <TableHead>Gate</TableHead>
                         <TableHead>Tests</TableHead>
                         <TableHead>Results</TableHead>
                         <TableHead>Regressions</TableHead>
@@ -191,12 +202,25 @@ export default function RunsPage() {
                       {runs.map((run) => (
                         <TableRow key={run.id} className="cursor-pointer" onClick={() => window.location.href = `/runs/${run.id}`}>
                           <TableCell className="font-mono text-sm">{run.id.slice(0, 8)}...</TableCell>
-                          <TableCell className="font-mono text-sm">{run.target_agent_id.slice(0, 8)}...</TableCell>
-                          <TableCell className="font-mono text-sm">{run.suite_id.slice(0, 8)}... (v{run.suite_version})</TableCell>
+                          <TableCell className="text-sm" title={run.target_agent_id}>
+                            {run.target_agent_name ?? `${run.target_agent_id.slice(0, 8)}...`}
+                          </TableCell>
+                          <TableCell className="text-sm" title={run.suite_id}>
+                            {run.suite_name ?? `${run.suite_id.slice(0, 8)}...`} (v{run.suite_version})
+                          </TableCell>
                           <TableCell>
                             <span className={`px-2 py-1 rounded-full text-xs font-medium ${getStatusColor(run.status)}`}>
                               {run.status.replace("_", " ")}
                             </span>
+                          </TableCell>
+                          <TableCell>
+                            {run.gate_decision ? (
+                              <span className={`px-2 py-1 rounded-full text-xs font-semibold ${GATE_BADGE[run.gate_decision] ?? ""}`}>
+                                {run.gate_decision}
+                              </span>
+                            ) : (
+                              <span className="text-xs text-muted-foreground">—</span>
+                            )}
                           </TableCell>
                           <TableCell>{run.total_tests}</TableCell>
                           <TableCell>

@@ -116,6 +116,18 @@ class Run(Base):
         back_populates="run", lazy="dynamic", cascade="all, delete-orphan"
     )
 
+    # Display names for API responses. Read only when the relationship is already loaded
+    # (it is joined-loaded on queries); never trigger a lazy load from async code.
+    @property
+    def target_agent_name(self) -> str | None:
+        agent = self.__dict__.get("target_agent")
+        return agent.name if agent is not None else None
+
+    @property
+    def suite_name(self) -> str | None:
+        suite = self.__dict__.get("suite")
+        return suite.name if suite is not None else None
+
     __table_args__ = (
         Index("ix_runs_status_created", "status", "created_at"),
         Index("ix_runs_agent_suite", "target_agent_id", "suite_id"),

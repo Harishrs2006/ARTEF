@@ -5,7 +5,12 @@ from typing import Any
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 
+from sqlalchemy import func, select
+
 from app.api.deps import TokenData, get_run_repo, require_role
+from app.domain.enums import Verdict
+from app.models.run import Result
+from app.models.test_suite import TestCase
 from app.repositories.runs import RunRepository
 
 router = APIRouter()
@@ -66,7 +71,7 @@ async def get_analytics(
     days = days_map.get(time_range, 7)
     cutoff = datetime.now(UTC) - timedelta(days=days)
 
-    runs = await run_repo.list(skip=0, limit=500, filters={})
+    runs = await run_repo.list(skip=0, limit=None, filters={})
 
     filtered_runs = []
     for r in runs:
@@ -75,9 +80,6 @@ async def get_analytics(
             r_created = r_created.replace(tzinfo=UTC)
         if r_created >= cutoff:
             filtered_runs.append(r)
-
-    if not filtered_runs and runs:
-        filtered_runs = runs[:30]
 
     runs_by_day: dict[str, int] = defaultdict(int)
     passed_by_day: dict[str, int] = defaultdict(int)
@@ -113,15 +115,11 @@ async def get_analytics(
             sorted_days.append(d)
 
     runs_over_time = [{"date": d, "count": runs_by_day.get(d, 0)} for d in sorted_days]
+    # Only days that actually ran tests; an empty day is not a 100% pass rate.
     pass_rate_over_time = [
-        {
-            "date": d,
-            "rate": round(
-                (passed_by_day.get(d, 0) / tests_by_day[d] * 100) if tests_by_day.get(d, 0) > 0 else 100.0,
-                1,
-            ),
-        }
+        {"date": d, "rate": round(passed_by_day[d] / tests_by_day[d] * 100, 1)}
         for d in sorted_days
+        if tests_by_day.get(d, 0) > 0
     ]
     regressions_over_time = [
         {"date": d, "count": regressions_by_day.get(d, 0)} for d in sorted_days
@@ -147,19 +145,37 @@ async def get_analytics(
         {"severity": "Low", "count": total_low},
     ]
 
-    category_distribution = [
-        {"category": "Jailbreak", "count": max(1, total_critical + total_high)},
-        {"category": "Prompt Injection", "count": max(1, total_high + total_medium)},
-        {"category": "PII Leakage", "count": max(1, total_medium)},
-        {"category": "Tool Abuse", "count": max(0, total_critical)},
-        {"category": "RAG Poisoning", "count": max(0, total_low)},
-    ]
-
-    top_failing_tests = [
-        {"test_case_id": "tc-jailbreak-001", "failure_count": total_critical or 1},
-        {"test_case_id": "tc-injection-003", "failure_count": total_high or 1},
-        {"test_case_id": "tc-pii-leak-002", "failure_count": total_medium or 0},
-    ]
+    # Failures by test-case category and the most frequently failing tests, counted from the
+    # stored results of the runs in this period.
+    category_distribution: list[dict[str, Any]] = []
+    top_failing_tests: list[dict[str, Any]] = []
+    run_ids = [r.id for r in filtered_runs]
+    if run_ids:
+        session = run_repo.session
+        failed = (Result.run_id.in_(run_ids), Result.verdict == Verdict.FAIL)
+        by_category = await session.execute(
+            select(TestCase.category, func.count(Result.id))
+            .join(Result, Result.test_case_id == TestCase.id)
+            .where(*failed)
+            .group_by(TestCase.category)
+            .order_by(func.count(Result.id).desc())
+        )
+        category_distribution = [
+            {"category": category.value.replace("_", " ").title(), "count": count}
+            for category, count in by_category.all()
+        ]
+        by_test = await session.execute(
+            select(TestCase.test_case_id, func.count(Result.id))
+            .join(Result, Result.test_case_id == TestCase.id)
+            .where(*failed)
+            .group_by(TestCase.id, TestCase.test_case_id)
+            .order_by(func.count(Result.id).desc())
+            .limit(5)
+        )
+        top_failing_tests = [
+            {"test_case_id": test_case_id, "failure_count": count}
+            for test_case_id, count in by_test.all()
+        ]
 
     return AnalyticsResponse(
         runs_over_time=runs_over_time,

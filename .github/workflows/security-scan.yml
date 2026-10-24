@@ -53,6 +53,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Dependency review
+        # Needs "Dependency graph" enabled in the repository settings (Settings > Code
+        # security); until then the action cannot run. Remove continue-on-error once enabled.
+        continue-on-error: true
         uses: actions/dependency-review-action@v4
         with:
           fail-on-severity: high
